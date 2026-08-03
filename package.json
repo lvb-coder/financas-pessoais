@@ -11,7 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "lucide-react": "^0.383.0",
-    "pluggy-connect-sdk": "^0.13.0",
+    "pluggy-connect-sdk": "^2.14.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
