@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Wallet, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut } from "lucide-react";
+import { Plus, Wallet, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark } from "lucide-react";
+import PluggyConnect from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
 
@@ -89,6 +90,36 @@ function Dashboard({ userId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
+  const [connecting, setConnecting] = useState(false);
+
+  const connectBank = async () => {
+    setConnecting(true);
+    setError("");
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke("pluggy-connect-token");
+      if (fnError) throw fnError;
+      const pluggyConnect = new PluggyConnect({
+        connectToken: data.connectToken,
+        includeSandbox: false,
+        onSuccess: async (itemData) => {
+          const { error: insErr } = await supabase
+            .from("bank_items")
+            .insert({ id: itemData.item.id, institution: itemData.item.connector?.name || "Banco", user_id: userId });
+          if (insErr) setError(insErr.message);
+          setConnecting(false);
+        },
+        onError: (err) => {
+          setError(err.message || "Erro ao conectar o banco.");
+          setConnecting(false);
+        },
+        onClose: () => setConnecting(false),
+      });
+      pluggyConnect.init();
+    } catch (e) {
+      setError(e.message || "Não consegui iniciar a conexão com o banco.");
+      setConnecting(false);
+    }
+  };
 
   // Carga inicial + garante categorias padrão na primeira vez
   useEffect(() => {
@@ -228,6 +259,9 @@ function Dashboard({ userId }) {
           <h1>Minhas finanças</h1>
         </div>
         <div className="header-actions">
+          <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
+            <Landmark size={16} /> {connecting ? "Conectando…" : "Conectar banco"}
+          </button>
           <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações"><Settings size={18} /></button>
           <button className="icon-btn" onClick={logout} aria-label="Sair"><LogOut size={18} /></button>
           <div className="month-nav">
@@ -428,6 +462,8 @@ function Root() {
       h1 { font-family: 'Fraunces', Georgia, serif; font-size: 28px; margin: 0; font-weight: 600; }
       .header-actions { display: flex; align-items: center; gap: 10px; }
       .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
+      .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
+      .connect-btn:disabled { opacity: 0.6; cursor: default; }
       .month-nav { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
       .month-nav button { background: none; border: none; color: var(--text); cursor: pointer; display: flex; padding: 2px; }
       .banner { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
