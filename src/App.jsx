@@ -203,6 +203,12 @@ function Dashboard({ userId }) {
     if (error) setError(error.message);
   };
 
+  const deleteRule = async (keyword) => {
+    const { error } = await supabase.from("rules").delete().eq("keyword", keyword);
+    if (error) { setError(error.message); return; }
+    setRules((prev) => prev.filter((r) => r.keyword !== keyword));
+  };
+
   const updateFechamentos = async (next) => {
     setFechamentos(next);
     const { error } = await supabase.from("settings").upsert({ key: "fechamentos", value: next, user_id: userId }, { onConflict: "key,user_id" });
@@ -312,7 +318,7 @@ function Dashboard({ userId }) {
 
       {showAdd && <AddRawModal fontes={FONTES} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
-        <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} rules={rules} categories={categories} onClose={() => setShowSettings(false)} />
+        <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} rules={rules} categories={categories} onDeleteRule={deleteRule} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
@@ -375,7 +381,7 @@ function AddRawModal({ fontes, onClose, onSave }) {
   );
 }
 
-function SettingsModal({ fechamentos, setFechamentos, rules, categories, onClose }) {
+function SettingsModal({ fechamentos, setFechamentos, rules, categories, onDeleteRule, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -398,6 +404,7 @@ function SettingsModal({ fechamentos, setFechamentos, rules, categories, onClose
               <div key={r.keyword} className="rule-row">
                 <span>{r.keyword}</span>
                 <span className="of">{cat?.name}{r.alwaysAsk ? " · sempre confirmar" : ""}</span>
+                <button className="ledger-remove" onClick={() => onDeleteRule(r.keyword)} aria-label="Apagar regra"><X size={13} /></button>
               </div>
             );
           })}
@@ -472,7 +479,7 @@ function Root() {
       .modal input, .modal select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--text); font-size: 14px; font-family: inherit; }
       .submit-btn { background: var(--gold); color: #0F1613; border: none; border-radius: 999px; padding: 10px; font-weight: 600; cursor: pointer; margin-top: 4px; }
       .rules-list { display: grid; gap: 6px; max-height: 160px; overflow-y: auto; }
-      .rule-row { display: flex; justify-content: space-between; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+      .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
       @media (max-width: 420px) {
         .ledger-row { grid-template-columns: 34px 1fr auto 20px; }
         .ledger-cat { display: none; }
