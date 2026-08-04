@@ -145,15 +145,23 @@ function matchesSearch(tx, categories, merchants, query) {
   return false;
 }
 
-// Duas compras no mesmo estabelecimento + categoria, com valor mensal a até R$5 de diferença
-function isPossibleDuplicate(tx, all) {
-  return all.some((other) =>
-    other.id !== tx.id &&
-    other.merchantId === tx.merchantId &&
-    other.categoryId === tx.categoryId &&
-    other.status === "categorizado" &&
-    Math.abs(other.valor - tx.valor) <= 5
-  );
+// Agrupa transações aprovadas (e ainda não revisadas) que parecem duplicadas:
+// mesmo estabelecimento + categoria, valor mensal a até R$5 de diferença.
+function findDuplicateGroups(transactions) {
+  const candidates = transactions.filter((t) => t.status === "categorizado" && !t.duplicateReviewed && t.merchantId);
+  const used = new Set();
+  const groups = [];
+  for (const t of candidates) {
+    if (used.has(t.id)) continue;
+    const group = candidates.filter((o) =>
+      o.merchantId === t.merchantId && o.categoryId === t.categoryId && Math.abs(o.valor - t.valor) <= 5
+    );
+    if (group.length > 1) {
+      group.forEach((g) => used.add(g.id));
+      groups.push(group.sort((a, b) => b.data.localeCompare(a.data)));
+    }
+  }
+  return groups;
 }
 
 // -- Mapeadores entre linhas do Supabase (snake_case) e o formato usado na UI --
@@ -163,6 +171,7 @@ const mapTransaction = (row) => ({
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
   competenciaOverride: row.competencia_override, projetada: row.projetada,
   parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
+  duplicateReviewed: row.duplicate_reviewed,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -337,6 +346,7 @@ function Dashboard({ userId }) {
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
   const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
+  const duplicateGroups = useMemo(() => findDuplicateGroups(transactions), [transactions]);
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -472,6 +482,12 @@ function Dashboard({ userId }) {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const markNotDuplicate = async (ids) => {
+    const { error } = await supabase.from("transactions").update({ duplicate_reviewed: true }).in("id", ids);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, duplicateReviewed: true } : t)));
+  };
+
   const updateLimit = async (id, value) => {
     const limit = parseFloat(value) || 0;
     setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, limit } : c)));
@@ -542,6 +558,32 @@ function Dashboard({ userId }) {
       </div>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
+
+      {view === "transacoes" && duplicateGroups.length > 0 && (
+        <section className="duplicates-panel">
+          <h2 className="section-title"><AlertTriangle size={16} color="var(--warn)" /> Possíveis duplicidades</h2>
+          {duplicateGroups.map((group) => {
+            const merch = merchants.find((m) => m.id === group[0].merchantId);
+            const cat = categories.find((c) => c.id === group[0].categoryId);
+            return (
+              <div key={group.map((g) => g.id).join("-")} className="duplicate-group">
+                <div className="duplicate-group-head">
+                  <strong>{merch?.name}</strong> <span className="of">· {cat?.name}</span>
+                  <button className="ignore-link" onClick={() => markNotDuplicate(group.map((g) => g.id))}>Não são duplicatas</button>
+                </div>
+                {group.map((t) => (
+                  <div key={t.id} className="duplicate-item">
+                    <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                    <span>{t.banco} · {t.tipo}</span>
+                    <span className="tx-valor-total">{currency(t.valor)}</span>
+                    <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Excluir" title="Excluir esta"><X size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       {pendingCount > 0 && (
         <div className="banner banner-pending">
@@ -661,14 +703,18 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   if (all.length === 0) return null;
 
   const approved = all.filter((t) => t.status === "categorizado");
-  const programadas = approved.filter((t) => t.parcelaAtual > 1);
-  const novas = approved.filter((t) => t.parcelaAtual === 1);
+  const isPixMerchant = (t) => {
+    const m = merchants.find((mm) => mm.id === t.merchantId);
+    return !!(m && /^pix no cr[ée]dito/i.test(m.name));
+  };
+  const isProgramada = (t) => (isPixMerchant(t) ? t.parcelaTotal > 1 : t.parcelaAtual > 1);
+  const programadas = approved.filter(isProgramada);
+  const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
 
   const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
-  const qtdNovasParceladas = novas.filter((t) => t.parcelaTotal > 1).length;
 
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
@@ -688,7 +734,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
       <div className="fatura-summary">
         <span>Total da fatura <strong>{currency(totalFatura)}</strong></span>
         <span>Qtd. transações <strong>{approved.length}</strong></span>
-        <span>Novas transações <strong>{currency(totalNovas)}</strong> ({novas.length}, {qtdNovasParceladas} parcelada{qtdNovasParceladas !== 1 ? "s" : ""})</span>
+        <span>Novas transações <strong>{currency(totalNovas)}</strong> ({novas.length})</span>
         <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong> ({programadas.length})</span>
       </div>
 
@@ -711,7 +757,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -725,7 +771,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -738,11 +784,10 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, allApproved, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
-  const duplicada = allApproved ? isPossibleDuplicate(tx, allApproved) : false;
 
   if (editing) {
     return (
@@ -761,10 +806,9 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, al
   }
 
   return (
-    <div className={duplicada ? "tx-row tx-row-duplicada" : "tx-row"}>
+    <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
       <span className="tx-desc" title={tx.estabelecimento}>
-        {duplicada && <AlertTriangle size={12} color="var(--warn)" style={{ marginRight: 4, verticalAlign: "text-bottom" }} />}
         {merch?.name || tx.estabelecimento}
       </span>
       <span className="tx-desc">{cat?.name || "—"}</span>
@@ -1076,6 +1120,12 @@ function Root() {
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-row-duplicada { background: rgba(193,97,61,0.08); border-radius: 6px; }
+      .duplicates-panel { background: rgba(193,97,61,0.08); border: 1px solid var(--warn); border-radius: 14px; padding: 16px 18px; margin-bottom: 18px; }
+      .duplicate-group { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px dashed var(--line); }
+      .duplicate-group:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+      .duplicate-group-head { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 6px; }
+      .ignore-link { margin-left: auto; background: none; border: none; color: var(--muted); text-decoration: underline; font-size: 12px; cursor: pointer; }
+      .duplicate-item { display: grid; grid-template-columns: 52px 1fr 90px 24px; align-items: center; gap: 8px; font-size: 12px; padding: 4px 0; }
       .tx-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--text); font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box; }
       .tx-input-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
       .tx-raw-hint { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 2px; }
