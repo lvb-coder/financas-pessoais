@@ -746,6 +746,8 @@ function Dashboard({ userId }) {
 }
 
 function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
+  const [filtroNovas, setFiltroNovas] = useState("");
+  const [filtroProgramadas, setFiltroProgramadas] = useState("");
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
@@ -761,8 +763,14 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
 
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = novas.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const programadasF = programadas.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
+  const novasF = novas
+    .filter((t) => matchesSearch(t, categories, merchants, q))
+    .filter((t) => !filtroNovas || t.categoryId === filtroNovas)
+    .sort((a, b) => b.data.localeCompare(a.data));
+  const programadasF = programadas
+    .filter((t) => matchesSearch(t, categories, merchants, q))
+    .filter((t) => !filtroProgramadas || t.categoryId === filtroProgramadas)
+    .sort((a, b) => b.data.localeCompare(a.data));
 
   return (
     <section className="bank-group">
@@ -794,7 +802,13 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
 
       {novasF.length > 0 && (
         <>
-          <p className="tx-subhead">Novas transações</p>
+          <div className="tx-subhead-row">
+            <p className="tx-subhead">Novas transações</p>
+            <select className="filter-select" value={filtroNovas} onChange={(e) => setFiltroNovas(e.target.value)}>
+              <option value="">Todas as categorias</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
@@ -808,7 +822,13 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
 
       {programadasF.length > 0 && (
         <>
-          <p className="tx-subhead">Parcelas programadas</p>
+          <div className="tx-subhead-row">
+            <p className="tx-subhead">Parcelas programadas</p>
+            <select className="filter-select" value={filtroProgramadas} onChange={(e) => setFiltroProgramadas(e.target.value)}>
+              <option value="">Todas as categorias</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
@@ -977,9 +997,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
       <div className="approval-bottom">
         <div className="approval-field">
           <label>Fatura</label>
-          <select className="tx-input" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada">
-            {nearbyMonths().map((mk) => <option key={mk} value={mk}>{mk}</option>)}
-          </select>
+          <input className="tx-input" type="month" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada" />
         </div>
         <div className="approval-field approval-field-parcela">
           <label>Parcela</label>
@@ -1163,6 +1181,9 @@ function Root() {
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
+      .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; }
+      .tx-subhead-row .tx-subhead { margin: 0; }
+      .filter-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--muted); font-size: 11px; font-family: inherit; }
       .pendentes-cards { display: grid; gap: 10px; }
       .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
       .approval-card-editing { background: rgba(95,163,119,0.08); border-color: var(--ok); }
