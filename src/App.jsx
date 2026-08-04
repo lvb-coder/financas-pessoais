@@ -171,7 +171,7 @@ const mapTransaction = (row) => ({
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
   competenciaOverride: row.competencia_override, projetada: row.projetada,
   parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
-  duplicateReviewed: row.duplicate_reviewed,
+  duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -347,6 +347,13 @@ function Dashboard({ userId }) {
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
   const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
   const duplicateGroups = useMemo(() => findDuplicateGroups(transactions), [transactions]);
+  const globalSearchResults = useMemo(() => {
+    if (!search.trim()) return [];
+    return transactions
+      .filter((t) => t.status !== "excluida" && matchesSearch(t, categories, merchants, search))
+      .map((t) => ({ ...t, fatura: displayMonth(t, fechamentosFatura) }))
+      .sort((a, b) => b.data.localeCompare(a.data));
+  }, [search, transactions, categories, merchants, fechamentosFatura]);
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -406,27 +413,28 @@ function Dashboard({ userId }) {
     setPatterns((prev) => [...prev.filter((p) => p.pattern !== pattern), { pattern, merchantId: merchant.id }]);
 
     // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura manual)
-    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal };
+    const origemId = tx.origemId || tx.id;
+    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal, origem_id: origemId };
     if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
     const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
     if (selfErr) { setError(selfErr.message); return; }
 
     setTransactions((prev) => prev.map((t) => {
       if (t.id === tx.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, ...(competenciaOverride ? { competenciaOverride } : {}) };
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, origemId, ...(competenciaOverride ? { competenciaOverride } : {}) };
       }
       return t;
     }));
 
     // gera as parcelas futuras que ainda não existem, se for uma compra parcelada.
-    // Ancoradas na fatura escolhida (2026-07, 2026-08, 2026-09...), não na data da compra.
+    // Ancoradas na fatura escolhida (2026-07, 2026-08, 2026-09...), e ligadas a ESSA compra
+    // específica (origemId) — assim compras diferentes do mesmo estabelecimento não colidem.
     if (parcelaTotal > 1) {
       const faturaBase = competenciaOverride || competencia({ ...tx, data: dataFinal }, fechamentosFatura);
       const faltantes = [];
       for (let n = parcelaAtual + 1; n <= parcelaTotal; n++) {
         const jaExiste = transactions.some((t) =>
-          t.merchantId === merchant.id && t.banco === tx.banco && t.tipo === tx.tipo &&
-          t.parcelaAtual === n && t.parcelaTotal === parcelaTotal
+          (t.origemId || t.id) === origemId && t.parcelaAtual === n && t.parcelaTotal === parcelaTotal
         );
         if (!jaExiste) faltantes.push(n);
       }
@@ -444,6 +452,7 @@ function Dashboard({ userId }) {
           projetada: true,
           parcela_atual: n,
           parcela_total: parcelaTotal,
+          origem_id: origemId,
           competencia_override: addFatura(faturaBase, n - parcelaAtual),
         }));
         const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
@@ -601,6 +610,39 @@ function Dashboard({ userId }) {
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> Nova transação</button>
       </div>
 
+      {view === "transacoes" && search.trim() && (
+        <section className="search-panel">
+          <p className="tx-subhead" style={{ margin: "0 0 8px" }}>
+            {globalSearchResults.length} resultado(s) em todas as faturas
+          </p>
+          {globalSearchResults.length === 0 ? (
+            <p className="empty">Nada encontrado.</p>
+          ) : (
+            <div className="search-results-list">
+              {globalSearchResults.map((t) => {
+                const merch = merchants.find((m) => m.id === t.merchantId);
+                return (
+                  <button
+                    key={t.id}
+                    className="search-result-row"
+                    onClick={() => {
+                      const [y, m] = t.fatura.split("-").map(Number);
+                      setCursor(new Date(y, m - 1, 1));
+                    }}
+                  >
+                    <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                    <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
+                    <span className="of">{t.banco} · {t.tipo}</span>
+                    <span className="of">fatura {t.fatura}</span>
+                    <span className="tx-valor-total">{currency(t.valor)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
       {view === "transacoes" && (
         <>
           <datalist id="merchants-list">
@@ -703,11 +745,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   if (all.length === 0) return null;
 
   const approved = all.filter((t) => t.status === "categorizado");
-  const isPixMerchant = (t) => {
-    const m = merchants.find((mm) => mm.id === t.merchantId);
-    return !!(m && /^pix no cr[ée]dito/i.test(m.name));
-  };
-  const isProgramada = (t) => (isPixMerchant(t) ? t.parcelaTotal > 1 : t.parcelaAtual > 1);
+  const isProgramada = (t) => t.parcelaAtual > 1 || !!t.competenciaOverride;
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
@@ -813,7 +851,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, on
       </span>
       <span className="tx-desc">{cat?.name || "—"}</span>
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
-        {competencia(tx, fechamentosFatura)}{tx.projetada ? " · projetada" : ""}
+        {competencia(tx, fechamentosFatura)}
       </span>
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
       <span className="tx-valor">{currency(tx.valor * tx.parcelaTotal)}</span>
@@ -1134,6 +1172,10 @@ function Root() {
       .tx-parcela-edit { display: flex; align-items: center; justify-content: center; gap: 2px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); font-size: 11px; }
       .tx-parcela-input { width: 34px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 2px; color: var(--text); font-size: 12px; font-family: inherit; text-align: center; }
       .search-input { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; color: var(--text); font-size: 13px; font-family: inherit; margin-right: 10px; }
+      .search-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 18px; }
+      .search-results-list { display: grid; gap: 2px; }
+      .search-result-row { display: grid; grid-template-columns: 44px 1.4fr auto auto 80px; align-items: center; gap: 10px; padding: 7px 4px; border-radius: 6px; border: none; background: none; color: var(--text); font-size: 12px; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
+      .search-result-row:hover { background: var(--surface-2); }
       .tx-valor { font-family: 'IBM Plex Mono', monospace; text-align: right; }
       .tx-valor-mes { font-weight: 600; }
       .groups { display: grid; gap: 14px; margin-bottom: 24px; }
