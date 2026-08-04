@@ -238,11 +238,27 @@ function Dashboard({ userId }) {
   const resolvePendente = async (id, categoryId, sempre) => {
     const tx = transactions.find((t) => t.id === id);
     if (!tx) return;
-    const { error: updErr } = await supabase.from("transactions").update({ status: "categorizado", category_id: categoryId }).eq("id", id);
-    if (updErr) { setError(updErr.message); return; }
-    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "categorizado", categoryId } : t)));
-
     const keyword = tx.estabelecimento.toLowerCase();
+
+    if (sempre) {
+      // aplica também a todos os outros pendentes do mesmo estabelecimento, não só este
+      const { error: bulkErr } = await supabase
+        .from("transactions")
+        .update({ status: "categorizado", category_id: categoryId })
+        .eq("status", "pendente")
+        .ilike("estabelecimento", `%${tx.estabelecimento}%`);
+      if (bulkErr) { setError(bulkErr.message); return; }
+      setTransactions((prev) => prev.map((t) =>
+        t.status === "pendente" && t.estabelecimento.toLowerCase().includes(keyword)
+          ? { ...t, status: "categorizado", categoryId }
+          : t
+      ));
+    } else {
+      const { error: updErr } = await supabase.from("transactions").update({ status: "categorizado", category_id: categoryId }).eq("id", id);
+      if (updErr) { setError(updErr.message); return; }
+      setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "categorizado", categoryId } : t)));
+    }
+
     const { error: ruleErr } = await supabase
       .from("rules")
       .upsert({ keyword, category_id: categoryId, always_ask: !sempre, user_id: userId }, { onConflict: "keyword,user_id" });
@@ -425,7 +441,7 @@ function PendenteRow({ tx, categories, onResolve, onRemove }) {
         </select>
         <label className="checkbox">
           <input type="checkbox" checked={sempre} onChange={(e) => setSempre(e.target.checked)} />
-          sempre categorizar assim
+          sempre categorizar assim (aplica a todos os pendentes iguais)
         </label>
         <button className="confirm-btn" onClick={() => onResolve(tx.id, categoryId, sempre)}><Check size={14} /></button>
         <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Remover"><X size={14} /></button>
