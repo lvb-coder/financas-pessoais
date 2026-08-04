@@ -102,7 +102,7 @@ function Dashboard({ userId }) {
     try {
       const { data, error: fnError } = await supabase.functions.invoke("pluggy-sync");
       if (fnError) throw fnError;
-      setSyncMsg(`${data.novasDespesas} gasto(s) novo(s), ${data.pendentes} pendente(s), ${data.novasRendas} recebimento(s) novo(s).`);
+      setSyncMsg(`${data.novasDespesas} gasto(s) novo(s), ${data.pendentes} pendente(s), ${data.novasRendas} recebimento(s) novo(s). Debug: ${JSON.stringify(data.debug)}`);
       const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
       setIncomes(inc || []);
     } catch (e) {
