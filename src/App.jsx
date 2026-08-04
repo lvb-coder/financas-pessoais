@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -130,6 +130,10 @@ function looksLikePersonName(text) {
   return true;
 }
 
+function fmtAmt(value, hidden) {
+  return hidden ? "••••••" : currency(value);
+}
+
 function matchesSearch(tx, categories, merchants, query) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -213,6 +217,17 @@ function Dashboard({ userId }) {
   const [syncMsg, setSyncMsg] = useState("");
   const [view, setView] = useState("transacoes");
   const [search, setSearch] = useState("");
+  const [privacyMode, setPrivacyMode] = useState("normal"); // normal | privado | seguro
+  const [revealing, setRevealing] = useState(false);
+  const hidden = privacyMode !== "normal" && !revealing;
+  const seguro = privacyMode === "seguro" && !revealing;
+  const revealProps = {
+    onMouseDown: () => setRevealing(true),
+    onMouseUp: () => setRevealing(false),
+    onMouseLeave: () => setRevealing(false),
+    onTouchStart: () => setRevealing(true),
+    onTouchEnd: () => setRevealing(false),
+  };
 
   const [syncController, setSyncController] = useState(null);
 
@@ -540,8 +555,8 @@ function Dashboard({ userId }) {
       <Root />
       <header className="header">
         <div>
-          <p className="eyebrow">Fase 1 · Consolidação de gastos</p>
-          <h1>Minhas finanças</h1>
+          <p className="eyebrow">{seguro ? "App pessoal" : "Fase 1 · Consolidação de gastos"}</p>
+          <h1>{seguro ? "Minhas anotações" : "Minhas finanças"}</h1>
         </div>
         <div className="header-actions">
           <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
@@ -553,8 +568,23 @@ function Dashboard({ userId }) {
             </button>
           )}
           <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
-            <Landmark size={16} /> {connecting ? "Conectando…" : "Conectar banco"}
+            <Landmark size={16} /> {connecting ? "Conectando…" : seguro ? "Conectar" : "Conectar banco"}
           </button>
+          <div className="privacy-controls">
+            <button
+              className={"icon-btn privacy-btn" + (privacyMode !== "normal" ? " active" : "")}
+              onClick={() => setPrivacyMode(privacyMode === "normal" ? "privado" : privacyMode === "privado" ? "seguro" : "normal")}
+              aria-label="Modo de privacidade"
+              title={`Modo atual: ${privacyMode}. Clique pra trocar.`}
+            >
+              <Shield size={16} /> {privacyMode === "normal" ? "Normal" : privacyMode === "privado" ? "Privado" : "Seguro"}
+            </button>
+            {privacyMode !== "normal" && (
+              <button className="icon-btn peek-btn" {...revealProps} aria-label="Manter pressionado para revelar">
+                {revealing ? <Eye size={16} /> : <EyeOff size={16} />}
+              </button>
+            )}
+          </div>
           <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações"><Settings size={18} /></button>
           <button className="icon-btn" onClick={logout} aria-label="Sair"><LogOut size={18} /></button>
           <div className="month-nav">
@@ -566,8 +596,8 @@ function Dashboard({ userId }) {
       </header>
 
       <div className="view-tabs">
-        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>Cartão de Crédito</button>
-        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>Resumo por categoria</button>
+        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>{seguro ? "Lista 1" : "Cartão de Crédito"}</button>
+        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>{seguro ? "Lista 2" : "Resumo por categoria"}</button>
         <button className={"tab-btn" + (view === "lixeira" ? " active" : "")} onClick={() => setView("lixeira")}>Lixeira{excluidas.length > 0 ? ` (${excluidas.length})` : ""}</button>
       </div>
 
@@ -589,7 +619,7 @@ function Dashboard({ userId }) {
                   <div key={t.id} className="duplicate-item">
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
                     <span>{t.banco} · {t.tipo}</span>
-                    <span className="tx-valor-total">{currency(t.valor)}</span>
+                    <span className="tx-valor-total">{fmtAmt(t.valor, hidden)}</span>
                     <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Excluir" title="Excluir esta"><X size={14} /></button>
                   </div>
                 ))}
@@ -639,7 +669,7 @@ function Dashboard({ userId }) {
                     <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
                     <span className="of">{t.banco} · {t.tipo}</span>
                     <span className="of">fatura {t.fatura}</span>
-                    <span className="tx-valor-total">{currency(t.valor)}</span>
+                    <span className="tx-valor-total">{fmtAmt(t.valor, hidden)}</span>
                   </button>
                 );
               })}
@@ -668,6 +698,8 @@ function Dashboard({ userId }) {
               patterns={patterns}
               fechamentosFatura={fechamentosFatura}
               search={search}
+              hidden={hidden}
+              seguro={seguro}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
               onRevert={rejectTransaction}
@@ -693,8 +725,8 @@ function Dashboard({ userId }) {
                   <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
                     <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
-                    <span className="tx-valor">{currency(t.valor * t.parcelaTotal)}</span>
-                    <span className="tx-valor tx-valor-mes">{currency(t.valor)}</span>
+                    <span className="tx-valor">{fmtAmt(t.valor * t.parcelaTotal, hidden)}</span>
+                    <span className="tx-valor tx-valor-mes">{fmtAmt(t.valor, hidden)}</span>
                     <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
                     <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
                   </div>
@@ -712,7 +744,7 @@ function Dashboard({ userId }) {
               <div className="group-head">
                 <span className="dot" />
                 <h2>{meta.label}</h2>
-                <span className="group-total">{currency(totals[key].spent)} <span className="of">/ {currency(totals[key].planned)}</span></span>
+                <span className="group-total">{fmtAmt(totals[key].spent, hidden)} <span className="of">/ {fmtAmt(totals[key].planned, hidden)}</span></span>
               </div>
               <div className="cat-list">
                 {categories.filter((c) => c.group === key).map((c) => {
@@ -724,7 +756,7 @@ function Dashboard({ userId }) {
                       <div className="cat-row-top">
                         <span className="cat-name">{c.name}</span>
                         <span className={"cat-values" + (over ? " over" : "")}>
-                          {currency(spent)} <span className="of">/</span>
+                          {fmtAmt(spent, hidden)} <span className="of">/</span>
                           <input className="limit-input" type="number" value={c.limit} onChange={(e) => updateLimit(c.id, e.target.value)} />
                         </span>
                       </div>
@@ -769,7 +801,7 @@ function SortableHead({ sort, setSort }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
   const [filtrosNovas, setFiltrosNovas] = useState({ estab: "", categoria: "", fatura: "" });
   const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estab: "", categoria: "", fatura: "" });
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
@@ -828,21 +860,24 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const faturasNovas = [...new Set(novas.map((t) => competencia(t, fechamentosFatura)))].sort();
   const faturasProgramadas = [...new Set(programadas.map((t) => competencia(t, fechamentosFatura)))].sort();
 
+  const bancoLabel = seguro ? (banco === "Nubank" ? "Conta A" : "Conta B") : banco;
+  const tipoLabel = seguro ? (tipo === "Crédito" ? "Tipo 1" : "Tipo 2") : tipo;
+
   return (
     <section className="bank-group">
       <div className="group-head">
-        <h2>{banco} · {tipo}</h2>
+        <h2>{bancoLabel} · {tipoLabel}</h2>
         <span className="group-total">
-          {currency(totalFatura)}
+          {fmtAmt(totalFatura, hidden)}
           {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
         </span>
       </div>
 
       <div className="fatura-summary">
-        <span>Total da fatura <strong>{currency(totalFatura)}</strong></span>
+        <span>Total da fatura <strong>{fmtAmt(totalFatura, hidden)}</strong></span>
         <span>Qtd. transações <strong>{approved.length}</strong></span>
-        <span>Novas transações <strong>{currency(totalNovas)}</strong> ({novas.length})</span>
-        <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong> ({programadas.length})</span>
+        <span>Novas transações <strong>{fmtAmt(totalNovas, hidden)}</strong> ({novas.length})</span>
+        <span>Parcelas programadas <strong>{fmtAmt(totalProgramadas, hidden)}</strong> ({programadas.length})</span>
       </div>
 
       {pendingF.length > 0 && (
@@ -850,7 +885,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <p className="tx-subhead">Pendentes de aprovação</p>
           <div className="pendentes-cards">
             {pendingF.map((t) => (
-              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} onApprove={onApprove} onIgnore={onIgnore} />
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} hidden={hidden} onApprove={onApprove} onIgnore={onIgnore} />
             ))}
           </div>
         </>
@@ -875,7 +910,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <div className="tx-list">
             <SortableHead sort={sortNovas} setSort={setSortNovas} />
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -900,7 +935,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <div className="tx-list">
             <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} />
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -913,7 +948,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
@@ -926,6 +961,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, on
         merchants={merchants}
         patterns={patterns}
         fechamentosFatura={fechamentosFatura}
+        hidden={hidden}
         mode="editing"
         onApprove={(t, payload) => { onApprove(t, payload); setEditing(false); }}
         onCancel={() => setEditing(false)}
@@ -945,15 +981,15 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, on
         {competencia(tx, fechamentosFatura)}
       </span>
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
-      <span className="tx-valor">{currency(tx.valor * tx.parcelaTotal)}</span>
-      <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
+      <span className="tx-valor">{fmtAmt(tx.valor * tx.parcelaTotal, hidden)}</span>
+      <span className="tx-valor tx-valor-mes">{fmtAmt(tx.valor, hidden)}</span>
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, allTransactions = [], onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, allTransactions = [], hidden, onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
   const [merchantName, setMerchantName] = useState("");
   const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
@@ -1038,7 +1074,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
                 <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
                 <span>{d.banco} · {d.tipo}</span>
                 <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
-                <span className="tx-valor-total">{currency(d.valor)}</span>
+                <span className="tx-valor-total">{fmtAmt(d.valor, hidden)}</span>
               </div>
             ))}
           </div>
@@ -1089,7 +1125,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         </div>
         <div className="approval-field">
           <label>Total</label>
-          <span className="tx-valor-total">{currency(valorMesNum * parcelaTotal)}</span>
+          <span className="tx-valor-total">{fmtAmt(valorMesNum * parcelaTotal, hidden)}</span>
         </div>
         <div className="approval-actions">
           <button className="confirm-btn" disabled={!merchantName.trim()} onClick={submit}>
@@ -1233,6 +1269,9 @@ function Root() {
       .eyebrow { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
       h1 { font-family: 'Fraunces', Georgia, serif; font-size: 28px; margin: 0; font-weight: 600; }
       .header-actions { display: flex; align-items: center; gap: 10px; }
+      .privacy-controls { display: flex; gap: 6px; }
+      .privacy-btn.active { color: var(--gold); border-color: var(--gold); }
+      .peek-btn { cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none; }
       .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
       .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
       .connect-btn:disabled { opacity: 0.6; cursor: default; }
