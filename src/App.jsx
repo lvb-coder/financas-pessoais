@@ -57,6 +57,19 @@ function competencia(tx, fechamentosFatura) {
   return tx.data.slice(0, 7); // nenhum fechamento futuro cadastrado ainda — usa o mês da própria compra
 }
 
+// Antes de aprovar, ainda não existe fatura definida — mostra a transação no mês real da compra.
+// Depois de aprovada, passa a valer a fatura (calculada ou escolhida manualmente).
+function displayMonth(tx, fechamentosFatura) {
+  if (tx.status !== "categorizado") return tx.data.slice(0, 7);
+  return competencia(tx, fechamentosFatura);
+}
+
+function addFatura(competenciaStr, n) {
+  const [y, m] = competenciaStr.split("-").map(Number);
+  const dt = new Date(y, m - 1 + n, 1);
+  return monthKey(dt);
+}
+
 function addMonths(dateStr, n) {
   const [y, m, d] = dateStr.split("-").map(Number);
   const dt = new Date(y, m - 1 + n, 1);
@@ -318,7 +331,7 @@ function Dashboard({ userId }) {
 
   const currentMonth = monthKey(cursor);
   const monthTx = useMemo(
-    () => transactions.filter((t) => t.status !== "excluida" && competencia(t, fechamentosFatura) === currentMonth),
+    () => transactions.filter((t) => t.status !== "excluida" && displayMonth(t, fechamentosFatura) === currentMonth),
     [transactions, currentMonth, fechamentosFatura]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
@@ -395,8 +408,10 @@ function Dashboard({ userId }) {
       return t;
     }));
 
-    // gera as parcelas futuras que ainda não existem, se for uma compra parcelada
+    // gera as parcelas futuras que ainda não existem, se for uma compra parcelada.
+    // Ancoradas na fatura escolhida (2026-07, 2026-08, 2026-09...), não na data da compra.
     if (parcelaTotal > 1) {
+      const faturaBase = competenciaOverride || competencia({ ...tx, data: dataFinal }, fechamentosFatura);
       const faltantes = [];
       for (let n = parcelaAtual + 1; n <= parcelaTotal; n++) {
         const jaExiste = transactions.some((t) =>
@@ -419,6 +434,7 @@ function Dashboard({ userId }) {
           projetada: true,
           parcela_atual: n,
           parcela_total: parcelaTotal,
+          competencia_override: addFatura(faturaBase, n - parcelaAtual),
         }));
         const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
         if (projErr) { setError(projErr.message); return; }
@@ -564,6 +580,7 @@ function Dashboard({ userId }) {
               search={search}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
+              onRevert={rejectTransaction}
               onRemove={removeTransaction}
             />
           ))}
@@ -639,7 +656,7 @@ function Dashboard({ userId }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
@@ -694,7 +711,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -708,7 +725,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -721,7 +738,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, allApproved, onApprove, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, allApproved, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
@@ -738,6 +755,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, al
         mode="editing"
         onApprove={(t, payload) => { onApprove(t, payload); setEditing(false); }}
         onCancel={() => setEditing(false)}
+        onRevert={(id) => { onRevert(id); setEditing(false); }}
       />
     );
   }
@@ -751,7 +769,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, al
       </span>
       <span className="tx-desc">{cat?.name || "—"}</span>
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
-        {tx.projetada ? "projetada" : competencia(tx, fechamentosFatura)}
+        {competencia(tx, fechamentosFatura)}{tx.projetada ? " · projetada" : ""}
       </span>
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
       <span className="tx-valor">{currency(tx.valor * tx.parcelaTotal)}</span>
@@ -762,7 +780,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, al
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, mode = "pending", onCancel }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
   const [merchantName, setMerchantName] = useState("");
   const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
@@ -878,7 +896,10 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
             <Check size={14} />
           </button>
           {mode === "editing" ? (
-            <button className="ledger-remove" onClick={onCancel} aria-label="Cancelar edição" title="Cancelar"><X size={14} /></button>
+            <>
+              <button className="ledger-remove" onClick={() => onRevert(tx.id)} aria-label="Voltar para pendentes" title="Voltar para pendentes"><RotateCcw size={14} /></button>
+              <button className="ledger-remove" onClick={onCancel} aria-label="Cancelar edição" title="Cancelar"><X size={14} /></button>
+            </>
           ) : (
             <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
           )}
