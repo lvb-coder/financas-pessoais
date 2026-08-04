@@ -90,12 +90,37 @@ function stripParcela(estabelecimento) {
   return (estabelecimento || "").replace(/\s*\d{1,2}\s*\/\s*\d{1,2}\s*$/, "").trim();
 }
 
+function titleCase(str) {
+  return (str || "")
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+function matchesSearch(tx, categories, merchants, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const merch = merchants.find((m) => m.id === tx.merchantId);
+  const nome = (merch?.name || tx.estabelecimento).toLowerCase();
+  if (nome.includes(q)) return true;
+  const qNum = q.replace(",", ".").replace(/[^\d.]/g, "");
+  if (qNum) {
+    const total = (tx.valor * tx.parcelaTotal).toFixed(2);
+    const mensal = tx.valor.toFixed(2);
+    if (total.includes(qNum) || mensal.includes(qNum)) return true;
+  }
+  return false;
+}
+
 // -- Mapeadores entre linhas do Supabase (snake_case) e o formato usado na UI --
 const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, limit: row.limit_value });
 const mapTransaction = (row) => ({
   id: row.id, data: row.data, estabelecimento: row.estabelecimento, valor: Number(row.valor),
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
   competenciaOverride: row.competencia_override, projetada: row.projetada,
+  parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -131,6 +156,7 @@ function Dashboard({ userId }) {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [view, setView] = useState("transacoes");
+  const [search, setSearch] = useState("");
 
   const syncBank = async () => {
     setSyncing(true);
@@ -236,11 +262,12 @@ function Dashboard({ userId }) {
 
   const currentMonth = monthKey(cursor);
   const monthTx = useMemo(
-    () => transactions.filter((t) => competencia(t, fechamentosFatura) === currentMonth),
+    () => transactions.filter((t) => t.status !== "excluida" && competencia(t, fechamentosFatura) === currentMonth),
     [transactions, currentMonth, fechamentosFatura]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
+  const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -264,7 +291,12 @@ function Dashboard({ userId }) {
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
   const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco }) => {
-    const row = { data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId, status: "pendente_estabelecimento", category_id: null, merchant_id: null };
+    const p = parseParcela(estabelecimento);
+    const row = {
+      data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId,
+      status: "pendente_estabelecimento", category_id: null, merchant_id: null,
+      parcela_atual: p.atual, parcela_total: p.total,
+    };
     const { data: inserted, error } = await supabase.from("transactions").insert(row).select().single();
     if (error) { setError(error.message); return; }
     setTransactions((prev) => [mapTransaction(inserted), ...prev]);
@@ -272,8 +304,8 @@ function Dashboard({ userId }) {
   };
 
   // Aprova uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez
-  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride }) => {
-    const name = merchantName.trim();
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor }) => {
+    const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
     if (!pattern) return;
@@ -308,37 +340,38 @@ function Dashboard({ userId }) {
       .eq("merchant_id", merchant.id);
     if (bulkErr2) { setError(bulkErr2.message); return; }
 
-    // fatura manual (ex: Pix no crédito que não segue o fechamento normal) — só nesta transação
-    if (competenciaOverride) {
-      const { error: ovrErr } = await supabase.from("transactions").update({ competencia_override: competenciaOverride }).eq("id", tx.id);
-      if (ovrErr) { setError(ovrErr.message); return; }
-    }
+    // grava nesta transação específica os valores que você editou (parcela, valor, fatura manual)
+    const selfUpdate = { parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor };
+    if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
+    const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
+    if (selfErr) { setError(selfErr.message); return; }
 
     setTransactions((prev) => prev.map((t) => {
+      if (t.id === tx.id) {
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, ...(competenciaOverride ? { competenciaOverride } : {}) };
+      }
       if (t.status === "categorizado") return t;
       if (t.estabelecimento.toLowerCase().includes(pattern) || t.merchantId === merchant.id) {
-        const extra = t.id === tx.id && competenciaOverride ? { competenciaOverride } : {};
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, ...extra };
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id };
       }
       return t;
     }));
 
     // gera as parcelas futuras que ainda não existem, se for uma compra parcelada
-    const parcela = parseParcela(tx.estabelecimento);
-    if (parcela.total > 1) {
+    if (parcelaTotal > 1) {
       const faltantes = [];
-      for (let n = parcela.atual + 1; n <= parcela.total; n++) {
+      for (let n = parcelaAtual + 1; n <= parcelaTotal; n++) {
         const jaExiste = transactions.some((t) =>
           t.merchantId === merchant.id && t.banco === tx.banco && t.tipo === tx.tipo &&
-          parseParcela(t.estabelecimento).atual === n && parseParcela(t.estabelecimento).total === parcela.total
+          t.parcelaAtual === n && t.parcelaTotal === parcelaTotal
         );
         if (!jaExiste) faltantes.push(n);
       }
       if (faltantes.length > 0) {
         const rows = faltantes.map((n) => ({
-          data: addMonths(tx.data, n - parcela.atual),
-          estabelecimento: `${pattern} ${n}/${parcela.total}`,
-          valor: tx.valor,
+          data: addMonths(tx.data, n - parcelaAtual),
+          estabelecimento: `${name} ${n}/${parcelaTotal}`,
+          valor,
           tipo: tx.tipo,
           banco: tx.banco,
           user_id: userId,
@@ -346,6 +379,8 @@ function Dashboard({ userId }) {
           category_id: categoryId,
           merchant_id: merchant.id,
           projetada: true,
+          parcela_atual: n,
+          parcela_total: parcelaTotal,
         }));
         const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
         if (projErr) { setError(projErr.message); return; }
@@ -361,7 +396,23 @@ function Dashboard({ userId }) {
     setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "pendente_estabelecimento" } : t)));
   };
 
+  // "Excluir" agora manda pra lixeira em vez de apagar de vez
   const removeTransaction = async (id) => {
+    const tx = transactions.find((t) => t.id === id);
+    const { error } = await supabase.from("transactions").update({ status: "excluida" }).eq("id", id);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "excluida", statusAnterior: tx?.status } : t)));
+  };
+
+  const restoreTransaction = async (id) => {
+    const tx = transactions.find((t) => t.id === id);
+    const novoStatus = tx?.statusAnterior || "pendente_estabelecimento";
+    const { error } = await supabase.from("transactions").update({ status: novoStatus }).eq("id", id);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: novoStatus } : t)));
+  };
+
+  const purgeTransaction = async (id) => {
     const { error } = await supabase.from("transactions").delete().eq("id", id);
     if (error) { setError(error.message); return; }
     setTransactions((prev) => prev.filter((t) => t.id !== id));
@@ -428,6 +479,7 @@ function Dashboard({ userId }) {
       <div className="view-tabs">
         <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>Cartão de Crédito</button>
         <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>Resumo por categoria</button>
+        <button className={"tab-btn" + (view === "lixeira" ? " active" : "")} onClick={() => setView("lixeira")}>Lixeira{excluidas.length > 0 ? ` (${excluidas.length})` : ""}</button>
       </div>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
@@ -442,7 +494,9 @@ function Dashboard({ userId }) {
       {syncMsg && <div className="banner banner-pending"><RefreshCw size={16} /> {syncMsg}</div>}
 
       <div className="ledger-head" style={{ marginBottom: 18 }}>
-        <span />
+        {view === "transacoes" ? (
+          <input className="search-input" type="text" placeholder="Buscar por estabelecimento ou valor…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        ) : <span />}
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> Nova transação</button>
       </div>
 
@@ -464,6 +518,7 @@ function Dashboard({ userId }) {
               merchants={merchants}
               patterns={patterns}
               fechamentosFatura={fechamentosFatura}
+              search={search}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
               onReject={rejectTransaction}
@@ -471,6 +526,34 @@ function Dashboard({ userId }) {
             />
           ))}
         </>
+      )}
+
+      {view === "lixeira" && (
+        <section className="bank-group">
+          <div className="group-head"><h2>Lixeira</h2></div>
+          {excluidas.length === 0 ? (
+            <p className="empty">Nada na lixeira.</p>
+          ) : (
+            <div className="tx-list">
+              <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
+                <span>Data</span><span>Estabelecimento</span><span>Total</span><span>Mês</span><span /><span />
+              </div>
+              {[...excluidas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
+                const merch = merchants.find((m) => m.id === t.merchantId);
+                return (
+                  <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
+                    <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                    <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
+                    <span className="tx-valor">{currency(t.valor * t.parcelaTotal)}</span>
+                    <span className="tx-valor tx-valor-mes">{currency(t.valor)}</span>
+                    <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
+                    <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       )}
 
       {view === "resumo" && (
@@ -514,19 +597,23 @@ function Dashboard({ userId }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, onReject, onRemove }) {
-  const list = transactions.filter((t) => t.banco === banco && t.tipo === tipo).sort((a, b) => b.data.localeCompare(a.data));
-  if (list.length === 0) return null;
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onReject, onRemove }) {
+  const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
+  if (all.length === 0) return null;
 
-  const pending = list.filter((t) => t.status !== "categorizado");
-  const approved = list.filter((t) => t.status === "categorizado");
-  const programadas = approved.filter((t) => parseParcela(t.estabelecimento).atual > 1);
-  const novas = approved.filter((t) => parseParcela(t.estabelecimento).atual === 1);
+  const approved = all.filter((t) => t.status === "categorizado");
+  const programadas = approved.filter((t) => t.parcelaAtual > 1);
+  const novas = approved.filter((t) => t.parcelaAtual === 1);
+  const pendingTotal = all.filter((t) => t.status !== "categorizado").length;
 
   const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
-  const qtdNovasParceladas = novas.filter((t) => parseParcela(t.estabelecimento).total > 1).length;
+  const qtdNovasParceladas = novas.filter((t) => t.parcelaTotal > 1).length;
+
+  const list = all
+    .filter((t) => matchesSearch(t, categories, merchants, search || ""))
+    .sort((a, b) => b.data.localeCompare(a.data));
 
   return (
     <section className="bank-group">
@@ -534,7 +621,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <h2>{banco} · {tipo}</h2>
         <span className="group-total">
           {currency(totalFatura)}
-          {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
+          {pendingTotal > 0 && <span className="of"> · {pendingTotal} pendente(s)</span>}
         </span>
       </div>
 
@@ -545,43 +632,21 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong> ({programadas.length})</span>
       </div>
 
-      {pending.length > 0 && (
+      {list.length === 0 ? (
+        <p className="empty">Nada encontrado.</p>
+      ) : (
         <div className="tx-list">
           <div className="tx-row tx-row-head">
             <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
           </div>
-          {pending.map((t) => (
-            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onIgnore={onIgnore} />
-          ))}
+          {list.map((t) =>
+            t.status === "categorizado" ? (
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
+            ) : (
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onIgnore={onIgnore} />
+            )
+          )}
         </div>
-      )}
-
-      {novas.length > 0 && (
-        <>
-          <p className="tx-subhead">Novas transações</p>
-          <div className="tx-list">
-            <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
-            </div>
-            {novas.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
-            ))}
-          </div>
-        </>
-      )}
-
-      {programadas.length > 0 && (
-        <>
-          <p className="tx-subhead">Parcelas programadas</p>
-          <div className="tx-list">
-            <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
-            </div>
-            {programadas.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
-            ))}
-          </div>
-        </>
       )}
     </section>
   );
@@ -590,7 +655,6 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
 function DisplayRow({ tx, categories, merchants, fechamentosFatura, onReject, onRemove }) {
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
-  const parcela = parseParcela(tx.estabelecimento);
   return (
     <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
@@ -599,8 +663,8 @@ function DisplayRow({ tx, categories, merchants, fechamentosFatura, onReject, on
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
         {tx.projetada ? "projetada" : competencia(tx, fechamentosFatura)}
       </span>
-      <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
-      <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
+      <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
+      <span className="tx-valor">{currency(tx.valor * tx.parcelaTotal)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
       <button className="ledger-remove" onClick={() => onReject(tx.id)} aria-label="Recusar" title="Recusar e editar de novo"><RotateCcw size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
@@ -612,8 +676,11 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   const [merchantName, setMerchantName] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
   const [fatura, setFatura] = useState(competencia(tx, fechamentosFatura));
-  const parcela = parseParcela(tx.estabelecimento);
+  const [parcelaAtual, setParcelaAtual] = useState(tx.parcelaAtual || 1);
+  const [parcelaTotal, setParcelaTotal] = useState(tx.parcelaTotal || 1);
+  const [valorMes, setValorMes] = useState(String(tx.valor));
   const faturaAutomatica = competencia(tx, fechamentosFatura);
+  const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
   useEffect(() => {
     if (tx.merchantId) {
@@ -660,13 +727,20 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
       <select className="ledger-cat-select" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada">
         {nearbyMonths().map((mk) => <option key={mk} value={mk}>{mk}</option>)}
       </select>
-      <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
-      <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
-      <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
+      <span className="tx-parcela-edit">
+        <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />/
+        <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onChange={(e) => setParcelaTotal(parseInt(e.target.value) || 1)} />
+      </span>
+      <span className="tx-valor">{currency(valorMesNum * parcelaTotal)}</span>
+      <input className="tx-input tx-valor-input" type="text" inputMode="decimal" value={valorMes} onChange={(e) => setValorMes(e.target.value)} />
       <button
         className="confirm-btn"
         disabled={!merchantName.trim()}
-        onClick={() => onApprove(tx, { merchantName, categoryId, competenciaOverride: fatura !== faturaAutomatica ? fatura : null })}
+        onClick={() => onApprove(tx, {
+          merchantName, categoryId,
+          competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
+          parcelaAtual, parcelaTotal, valor: valorMesNum,
+        })}
       >
         <Check size={14} />
       </button>
@@ -831,7 +905,11 @@ function Root() {
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--text); font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box; }
+      .tx-valor-input { text-align: right; font-family: 'IBM Plex Mono', monospace; }
       .tx-parcela { color: var(--muted); font-family: 'IBM Plex Mono', monospace; text-align: center; }
+      .tx-parcela-edit { display: flex; align-items: center; justify-content: center; gap: 2px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); font-size: 11px; }
+      .tx-parcela-input { width: 26px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 2px; color: var(--text); font-size: 11px; font-family: inherit; text-align: center; }
+      .search-input { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; color: var(--text); font-size: 13px; font-family: inherit; margin-right: 10px; }
       .tx-valor { font-family: 'IBM Plex Mono', monospace; text-align: right; }
       .tx-valor-mes { font-weight: 600; }
       .groups { display: grid; gap: 14px; margin-bottom: 24px; }
