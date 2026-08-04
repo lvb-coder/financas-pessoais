@@ -745,7 +745,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   if (all.length === 0) return null;
 
   const approved = all.filter((t) => t.status === "categorizado");
-  const isProgramada = (t) => t.parcelaAtual > 1 || !!t.competenciaOverride;
+  const isProgramada = (t) => t.parcelaAtual > 1 || t.data.slice(0, 7) !== competencia(t, fechamentosFatura);
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
