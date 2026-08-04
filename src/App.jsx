@@ -133,20 +133,27 @@ function looksLikePersonName(text) {
 function Mask({ value, active, mono, dots = "••••" }) {
   const [show, setShow] = useState(false);
   if (!active) return <>{value}</>;
-  const stop = (fn) => (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+  const onDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setShow(true);
+  };
+  const onUp = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShow(false);
+  };
   return (
-    <span className="mask-wrap">
+    <span
+      className="mask-wrap"
+      onPointerDown={onDown}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <span className={mono ? "mask-text mono" : "mask-text"}>{show ? value : dots}</span>
-      <button
-        type="button"
-        className="mask-peek"
-        aria-label="Manter pressionado para ver"
-        onMouseDown={stop(() => setShow(true))}
-        onMouseUp={stop(() => setShow(false))}
-        onMouseLeave={() => setShow(false)}
-        onTouchStart={stop(() => setShow(true))}
-        onTouchEnd={stop(() => setShow(false))}
-      >
+      <button type="button" className="mask-peek" tabIndex={-1} aria-label="Manter pressionado para ver">
         <Eye size={10} />
       </button>
     </span>
@@ -652,7 +659,7 @@ function Dashboard({ userId }) {
         {view === "transacoes" ? (
           <input className="search-input" type="text" placeholder="Buscar por estabelecimento ou valor…" value={search} onChange={(e) => setSearch(e.target.value)} />
         ) : <span />}
-        <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> Nova transação</button>
+        <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> <Mask value="Nova transação" active={seguro} /></button>
       </div>
 
       {view === "transacoes" && search.trim() && (
@@ -790,32 +797,69 @@ function Dashboard({ userId }) {
   );
 }
 
-function SortableHead({ sort, setSort }) {
+function SortableHead({ sort, setSort, seguro }) {
   const cols = [
     { key: "data", label: "Data" },
     { key: "estabelecimento", label: "Estabelecimento" },
     { key: "categoria", label: "Categoria" },
     { key: "fatura", label: "Fatura" },
-    { key: "parcela", label: "Parc." },
-    { key: "total", label: "Total" },
-    { key: "mes", label: "Mês" },
   ];
   const click = (key) => setSort((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: 1 }));
+  const arrow = (key) => (sort.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : "");
   return (
     <div className="tx-row tx-row-head">
       {cols.map((c) => (
         <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
-          {c.label}{sort.key === c.key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+          <Mask value={c.label} active={seguro} />{arrow(c.key)}
         </button>
       ))}
+      <span className="tx-head-parcela">
+        <button className="tx-head-subbtn" onClick={() => click("parcelaTotal")} title="Ordenar por quantidade de parcelas">
+          <Mask value="Qtd" active={seguro} />{arrow("parcelaTotal")}
+        </button>
+        <button className="tx-head-subbtn" onClick={() => click("parcelaAtual")} title="Ordenar por número da parcela atual">
+          <Mask value="Nº" active={seguro} />{arrow("parcelaAtual")}
+        </button>
+      </span>
+      <button className="tx-head-btn" onClick={() => click("total")}><Mask value="Valor Total" active={seguro} />{arrow("total")}</button>
+      <button className="tx-head-btn" onClick={() => click("mes")}><Mask value="Valor/Mês" active={seguro} />{arrow("mes")}</button>
       <span /><span />
     </div>
   );
 }
 
+function MultiFilter({ label, options, selected, onChange, seguro }) {
+  const [open, setOpen] = useState(false);
+  if (options.length === 0) return null;
+  const toggle = (value) => {
+    onChange(selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value]);
+  };
+  return (
+    <div className="multi-filter">
+      <button type="button" className="filter-select" onClick={() => setOpen((o) => !o)}>
+        <Mask value={label} active={seguro} />{selected.length > 0 ? ` (${selected.length})` : ""}
+      </button>
+      {open && (
+        <div className="multi-filter-panel">
+          <div className="multi-filter-actions">
+            {selected.length > 0 && <button type="button" className="ignore-link" onClick={() => onChange([])}>Limpar</button>}
+            <button type="button" className="ignore-link" onClick={() => setOpen(false)}>Fechar</button>
+          </div>
+          {options.map((o) => (
+            <label key={o.value} className="multi-filter-option">
+              <input type="checkbox" checked={selected.includes(o.value)} onChange={() => toggle(o.value)} />
+              <Mask value={o.label} active={seguro} />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
-  const [filtrosNovas, setFiltrosNovas] = useState({ estab: "", categoria: "", fatura: "" });
-  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estab: "", categoria: "", fatura: "" });
+  const [filtrosNovas, setFiltrosNovas] = useState({ estabs: [], categorias: [], datas: [] });
+  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estabs: [], categorias: [], datas: [] });
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -834,24 +878,23 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
+  const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
+
   const aplicarFiltros = (list, filtros) => list.filter((t) => {
-    if (filtros.categoria && t.categoryId !== filtros.categoria) return false;
-    if (filtros.fatura && competencia(t, fechamentosFatura) !== filtros.fatura) return false;
-    if (filtros.estab) {
-      const m = merchants.find((mm) => mm.id === t.merchantId);
-      const nome = (m?.name || t.estabelecimento).toLowerCase();
-      if (!nome.includes(filtros.estab.toLowerCase())) return false;
-    }
+    if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
+    if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
+    if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
     return true;
   });
 
   const sortValue = (t, key) => {
     switch (key) {
       case "data": return t.data;
-      case "estabelecimento": return (merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento).toLowerCase();
+      case "estabelecimento": return nomeDe(t).toLowerCase();
       case "categoria": return (categories.find((c) => c.id === t.categoryId)?.name || "").toLowerCase();
       case "fatura": return competencia(t, fechamentosFatura);
-      case "parcela": return t.parcelaAtual;
+      case "parcelaTotal": return t.parcelaTotal;
+      case "parcelaAtual": return t.parcelaAtual;
       case "total": return t.valor * t.parcelaTotal;
       case "mes": return t.valor;
       default: return t.data;
@@ -869,8 +912,17 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
   const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas), sortNovas);
   const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas), sortProgramadas);
-  const faturasNovas = [...new Set(novas.map((t) => competencia(t, fechamentosFatura)))].sort();
-  const faturasProgramadas = [...new Set(programadas.map((t) => competencia(t, fechamentosFatura)))].sort();
+
+  const opcoesFiltro = (list) => ({
+    estabs: [...new Set(list.map(nomeDe))].sort(),
+    categorias: [...new Set(list.map((t) => t.categoryId))]
+      .map((id) => categories.find((c) => c.id === id))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    datas: [...new Set(list.map((t) => t.data))].sort(),
+  });
+  const opcoesNovas = opcoesFiltro(novas);
+  const opcoesProgramadas = opcoesFiltro(programadas);
 
   return (
     <section className="bank-group">
@@ -883,15 +935,15 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
       </div>
 
       <div className="fatura-summary">
-        <span>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></span>
-        <span>Qtd. transações <strong>{approved.length}</strong></span>
-        <span>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</span>
-        <span>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</span>
+        <span><Mask value="Total da fatura" active={seguro} /> <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></span>
+        <span><Mask value="Qtd. transações" active={seguro} /> <strong>{approved.length}</strong></span>
+        <span><Mask value="Novas transações" active={seguro} /> <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</span>
+        <span><Mask value="Parcelas programadas" active={seguro} /> <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</span>
       </div>
 
       {pendingF.length > 0 && (
         <>
-          <p className="tx-subhead">Pendentes de aprovação</p>
+          <p className="tx-subhead"><Mask value="Pendentes de aprovação" active={seguro} /></p>
           <div className="pendentes-cards">
             {pendingF.map((t) => (
               <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} hidden={hidden} seguro={seguro} onApprove={onApprove} onIgnore={onIgnore} />
@@ -903,21 +955,15 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
       {novasF.length > 0 && (
         <>
           <div className="tx-subhead-row">
-            <p className="tx-subhead">Novas transações</p>
+            <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
             <div className="filter-row">
-              <input className="filter-input" type="text" placeholder="Estabelecimento…" value={filtrosNovas.estab} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, estab: e.target.value })} />
-              <select className="filter-select" value={filtrosNovas.categoria} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, categoria: e.target.value })}>
-                <option value="">Todas as categorias</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <select className="filter-select" value={filtrosNovas.fatura} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, fatura: e.target.value })}>
-                <option value="">Todas as faturas</option>
-                {faturasNovas.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
+              <MultiFilter label="Datas" options={opcoesNovas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosNovas.datas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, datas: v })} seguro={seguro} />
+              <MultiFilter label="Estabelecimentos" options={opcoesNovas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosNovas.estabs} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, estabs: v })} seguro={seguro} />
+              <MultiFilter label="Categorias" options={opcoesNovas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosNovas.categorias} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, categorias: v })} seguro={seguro} />
             </div>
           </div>
           <div className="tx-list">
-            <SortableHead sort={sortNovas} setSort={setSortNovas} />
+            <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} />
             {novasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -928,21 +974,15 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
       {programadasF.length > 0 && (
         <>
           <div className="tx-subhead-row">
-            <p className="tx-subhead">Parcelas programadas</p>
+            <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
             <div className="filter-row">
-              <input className="filter-input" type="text" placeholder="Estabelecimento…" value={filtrosProgramadas.estab} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, estab: e.target.value })} />
-              <select className="filter-select" value={filtrosProgramadas.categoria} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, categoria: e.target.value })}>
-                <option value="">Todas as categorias</option>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <select className="filter-select" value={filtrosProgramadas.fatura} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, fatura: e.target.value })}>
-                <option value="">Todas as faturas</option>
-                {faturasProgramadas.map((f) => <option key={f} value={f}>{f}</option>)}
-              </select>
+              <MultiFilter label="Datas" options={opcoesProgramadas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosProgramadas.datas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, datas: v })} seguro={seguro} />
+              <MultiFilter label="Estabelecimentos" options={opcoesProgramadas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosProgramadas.estabs} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, estabs: v })} seguro={seguro} />
+              <MultiFilter label="Categorias" options={opcoesProgramadas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosProgramadas.categorias} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, categorias: v })} seguro={seguro} />
             </div>
           </div>
           <div className="tx-list">
-            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} />
+            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} />
             {programadasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -1281,7 +1321,7 @@ function Root() {
       .header-actions { display: flex; align-items: center; gap: 10px; }
       .privacy-controls { display: flex; gap: 6px; }
       .privacy-btn.active { color: var(--gold); border-color: var(--gold); }
-      .mask-wrap { display: inline-flex; align-items: center; gap: 3px; }
+      .mask-wrap { display: inline-flex; align-items: center; gap: 3px; user-select: none; -webkit-user-select: none; touch-action: none; }
       .mask-text { letter-spacing: 1px; }
       .mask-text.mono { font-family: 'IBM Plex Mono', monospace; }
       .mask-peek { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -1313,6 +1353,10 @@ function Root() {
       .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; flex-wrap: wrap; gap: 8px; }
       .tx-subhead-row .tx-subhead { margin: 0; }
       .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+      .multi-filter { position: relative; }
+      .multi-filter-panel { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 160px; max-height: 220px; overflow-y: auto; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+      .multi-filter-actions { display: flex; justify-content: space-between; padding-bottom: 4px; border-bottom: 1px dashed var(--line); margin-bottom: 4px; }
+      .multi-filter-option { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); white-space: nowrap; }
       .filter-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--muted); font-size: 11px; font-family: inherit; }
       .filter-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--text); font-size: 11px; font-family: inherit; width: 120px; }
       .pendentes-cards { display: grid; gap: 10px; }
@@ -1330,8 +1374,11 @@ function Root() {
       .approval-field-parcela { min-width: 70px; }
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
-      .tx-list { min-width: 720px; }
-      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 46px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+      .tx-list { min-width: 740px; }
+      .tx-head-parcela { display: flex; flex-direction: column; gap: 1px; }
+      .tx-head-subbtn { background: none; border: none; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
+      .tx-head-subbtn:hover { color: var(--text); }
+      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 58px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
       .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
