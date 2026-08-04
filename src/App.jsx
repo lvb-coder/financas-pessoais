@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, TrendingUp } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -377,23 +377,6 @@ function Dashboard({ userId }) {
       )}
 
       {syncMsg && <div className="banner banner-pending"><RefreshCw size={16} /> {syncMsg}</div>}
-
-      {incomes.length > 0 && (
-        <section className="income-card">
-          <div className="group-head">
-            <TrendingUp size={16} color="var(--ok)" />
-            <h2>Renda do mês</h2>
-            <span className="group-total" style={{ color: "var(--ok)" }}>{currency(totalIncome)}</span>
-          </div>
-          {monthIncomes.map((i) => (
-            <div key={i.id} className="ledger-row" style={{ gridTemplateColumns: "40px 1fr auto" }}>
-              <span className="ledger-date">{i.data.slice(8, 10)}/{i.data.slice(5, 7)}</span>
-              <span className="ledger-desc">{i.descricao}</span>
-              <span className="ledger-amount" style={{ color: "var(--ok)" }}>{currency(i.valor)}</span>
-            </div>
-          ))}
-        </section>
-      )}
 
       <div className="ledger-head" style={{ marginBottom: 18 }}>
         <span />
