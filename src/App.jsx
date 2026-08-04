@@ -130,8 +130,27 @@ function looksLikePersonName(text) {
   return true;
 }
 
-function fmtAmt(value, hidden) {
-  return hidden ? "••••••" : currency(value);
+function Mask({ value, active, mono, dots = "••••" }) {
+  const [show, setShow] = useState(false);
+  if (!active) return <>{value}</>;
+  const stop = (fn) => (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+  return (
+    <span className="mask-wrap">
+      <span className={mono ? "mask-text mono" : "mask-text"}>{show ? value : dots}</span>
+      <button
+        type="button"
+        className="mask-peek"
+        aria-label="Manter pressionado para ver"
+        onMouseDown={stop(() => setShow(true))}
+        onMouseUp={stop(() => setShow(false))}
+        onMouseLeave={() => setShow(false)}
+        onTouchStart={stop(() => setShow(true))}
+        onTouchEnd={stop(() => setShow(false))}
+      >
+        <Eye size={10} />
+      </button>
+    </span>
+  );
 }
 
 function matchesSearch(tx, categories, merchants, query) {
@@ -218,16 +237,12 @@ function Dashboard({ userId }) {
   const [view, setView] = useState("transacoes");
   const [search, setSearch] = useState("");
   const [privacyMode, setPrivacyMode] = useState("normal"); // normal | privado | seguro
-  const [revealing, setRevealing] = useState(false);
-  const hidden = privacyMode !== "normal" && !revealing;
-  const seguro = privacyMode === "seguro" && !revealing;
-  const revealProps = {
-    onMouseDown: () => setRevealing(true),
-    onMouseUp: () => setRevealing(false),
-    onMouseLeave: () => setRevealing(false),
-    onTouchStart: () => setRevealing(true),
-    onTouchEnd: () => setRevealing(false),
-  };
+  const hidden = privacyMode !== "normal";
+  const seguro = privacyMode === "seguro";
+
+  useEffect(() => {
+    document.title = seguro ? "•••" : "Minhas Finanças";
+  }, [seguro]);
 
   const [syncController, setSyncController] = useState(null);
 
@@ -555,8 +570,8 @@ function Dashboard({ userId }) {
       <Root />
       <header className="header">
         <div>
-          <p className="eyebrow">{seguro ? "App pessoal" : "Fase 1 · Consolidação de gastos"}</p>
-          <h1>{seguro ? "Minhas anotações" : "Minhas finanças"}</h1>
+          <p className="eyebrow"><Mask value="Fase 1 · Consolidação de gastos" active={seguro} /></p>
+          <h1><Mask value="Minhas finanças" active={seguro} /></h1>
         </div>
         <div className="header-actions">
           <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
@@ -568,7 +583,7 @@ function Dashboard({ userId }) {
             </button>
           )}
           <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
-            <Landmark size={16} /> {connecting ? "Conectando…" : seguro ? "Conectar" : "Conectar banco"}
+            <Landmark size={16} /> {connecting ? "Conectando…" : <Mask value="Conectar banco" active={seguro} />}
           </button>
           <div className="privacy-controls">
             <button
@@ -579,11 +594,6 @@ function Dashboard({ userId }) {
             >
               <Shield size={16} /> {privacyMode === "normal" ? "Normal" : privacyMode === "privado" ? "Privado" : "Seguro"}
             </button>
-            {privacyMode !== "normal" && (
-              <button className="icon-btn peek-btn" {...revealProps} aria-label="Manter pressionado para revelar">
-                {revealing ? <Eye size={16} /> : <EyeOff size={16} />}
-              </button>
-            )}
           </div>
           <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações"><Settings size={18} /></button>
           <button className="icon-btn" onClick={logout} aria-label="Sair"><LogOut size={18} /></button>
@@ -596,8 +606,8 @@ function Dashboard({ userId }) {
       </header>
 
       <div className="view-tabs">
-        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>{seguro ? "Lista 1" : "Cartão de Crédito"}</button>
-        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>{seguro ? "Lista 2" : "Resumo por categoria"}</button>
+        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}><Mask value="Cartão de Crédito" active={seguro} /></button>
+        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}><Mask value="Resumo por categoria" active={seguro} /></button>
         <button className={"tab-btn" + (view === "lixeira" ? " active" : "")} onClick={() => setView("lixeira")}>Lixeira{excluidas.length > 0 ? ` (${excluidas.length})` : ""}</button>
       </div>
 
@@ -612,14 +622,14 @@ function Dashboard({ userId }) {
             return (
               <div key={group.map((g) => g.id).join("-")} className="duplicate-group">
                 <div className="duplicate-group-head">
-                  <strong>{merch?.name}</strong> <span className="of">· {cat?.name}</span>
+                  <strong><Mask value={merch?.name} active={seguro} /></strong> <span className="of">· <Mask value={cat?.name} active={seguro} /></span>
                   <button className="ignore-link" onClick={() => markNotDuplicate(group.map((g) => g.id))}>Não são duplicatas</button>
                 </div>
                 {group.map((t) => (
                   <div key={t.id} className="duplicate-item">
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
                     <span>{t.banco} · {t.tipo}</span>
-                    <span className="tx-valor-total">{fmtAmt(t.valor, hidden)}</span>
+                    <span className="tx-valor-total"><Mask value={currency(t.valor)} active={hidden} mono /></span>
                     <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Excluir" title="Excluir esta"><X size={14} /></button>
                   </div>
                 ))}
@@ -657,20 +667,22 @@ function Dashboard({ userId }) {
               {globalSearchResults.map((t) => {
                 const merch = merchants.find((m) => m.id === t.merchantId);
                 return (
-                  <button
+                  <div
                     key={t.id}
                     className="search-result-row"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
                       const [y, m] = t.fatura.split("-").map(Number);
                       setCursor(new Date(y, m - 1, 1));
                     }}
                   >
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
-                    <span className="of">{t.banco} · {t.tipo}</span>
+                    <span className="tx-desc"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                    <span className="of"><Mask value={`${t.banco} · ${t.tipo}`} active={seguro} /></span>
                     <span className="of">fatura {t.fatura}</span>
-                    <span className="tx-valor-total">{fmtAmt(t.valor, hidden)}</span>
-                  </button>
+                    <span className="tx-valor-total"><Mask value={currency(t.valor)} active={hidden} mono /></span>
+                  </div>
                 );
               })}
             </div>
@@ -724,9 +736,9 @@ function Dashboard({ userId }) {
                 return (
                   <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span className="tx-desc">{merch?.name || t.estabelecimento}</span>
-                    <span className="tx-valor">{fmtAmt(t.valor * t.parcelaTotal, hidden)}</span>
-                    <span className="tx-valor tx-valor-mes">{fmtAmt(t.valor, hidden)}</span>
+                    <span className="tx-desc"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                    <span className="tx-valor"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
+                    <span className="tx-valor tx-valor-mes"><Mask value={currency(t.valor)} active={hidden} mono /></span>
                     <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
                     <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
                   </div>
@@ -744,7 +756,7 @@ function Dashboard({ userId }) {
               <div className="group-head">
                 <span className="dot" />
                 <h2>{meta.label}</h2>
-                <span className="group-total">{fmtAmt(totals[key].spent, hidden)} <span className="of">/ {fmtAmt(totals[key].planned, hidden)}</span></span>
+                <span className="group-total"><Mask value={currency(totals[key].spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(totals[key].planned)} active={hidden} mono /></span></span>
               </div>
               <div className="cat-list">
                 {categories.filter((c) => c.group === key).map((c) => {
@@ -754,9 +766,9 @@ function Dashboard({ userId }) {
                   return (
                     <div key={c.id} className="cat-row">
                       <div className="cat-row-top">
-                        <span className="cat-name">{c.name}</span>
+                        <span className="cat-name"><Mask value={c.name} active={seguro} /></span>
                         <span className={"cat-values" + (over ? " over" : "")}>
-                          {fmtAmt(spent, hidden)} <span className="of">/</span>
+                          <Mask value={currency(spent)} active={hidden} mono /> <span className="of">/</span>
                           <input className="limit-input" type="number" value={c.limit} onChange={(e) => updateLimit(c.id, e.target.value)} />
                         </span>
                       </div>
@@ -860,24 +872,21 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const faturasNovas = [...new Set(novas.map((t) => competencia(t, fechamentosFatura)))].sort();
   const faturasProgramadas = [...new Set(programadas.map((t) => competencia(t, fechamentosFatura)))].sort();
 
-  const bancoLabel = seguro ? (banco === "Nubank" ? "Conta A" : "Conta B") : banco;
-  const tipoLabel = seguro ? (tipo === "Crédito" ? "Tipo 1" : "Tipo 2") : tipo;
-
   return (
     <section className="bank-group">
       <div className="group-head">
-        <h2>{bancoLabel} · {tipoLabel}</h2>
+        <h2><Mask value={`${banco} · ${tipo}`} active={seguro} /></h2>
         <span className="group-total">
-          {fmtAmt(totalFatura, hidden)}
+          <Mask value={currency(totalFatura)} active={hidden} mono />
           {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
         </span>
       </div>
 
       <div className="fatura-summary">
-        <span>Total da fatura <strong>{fmtAmt(totalFatura, hidden)}</strong></span>
+        <span>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></span>
         <span>Qtd. transações <strong>{approved.length}</strong></span>
-        <span>Novas transações <strong>{fmtAmt(totalNovas, hidden)}</strong> ({novas.length})</span>
-        <span>Parcelas programadas <strong>{fmtAmt(totalProgramadas, hidden)}</strong> ({programadas.length})</span>
+        <span>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</span>
+        <span>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</span>
       </div>
 
       {pendingF.length > 0 && (
@@ -885,7 +894,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <p className="tx-subhead">Pendentes de aprovação</p>
           <div className="pendentes-cards">
             {pendingF.map((t) => (
-              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} hidden={hidden} onApprove={onApprove} onIgnore={onIgnore} />
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} hidden={hidden} seguro={seguro} onApprove={onApprove} onIgnore={onIgnore} />
             ))}
           </div>
         </>
@@ -910,7 +919,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <div className="tx-list">
             <SortableHead sort={sortNovas} setSort={setSortNovas} />
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -935,7 +944,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
           <div className="tx-list">
             <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} />
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -948,7 +957,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
@@ -962,6 +971,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
         patterns={patterns}
         fechamentosFatura={fechamentosFatura}
         hidden={hidden}
+        seguro={seguro}
         mode="editing"
         onApprove={(t, payload) => { onApprove(t, payload); setEditing(false); }}
         onCancel={() => setEditing(false)}
@@ -973,23 +983,23 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   return (
     <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-      <span className="tx-desc" title={tx.estabelecimento}>
-        {merch?.name || tx.estabelecimento}
+      <span className="tx-desc" title={seguro ? "" : tx.estabelecimento}>
+        <Mask value={merch?.name || tx.estabelecimento} active={seguro} />
       </span>
-      <span className="tx-desc">{cat?.name || "—"}</span>
+      <span className="tx-desc"><Mask value={cat?.name || "—"} active={seguro} /></span>
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
         {competencia(tx, fechamentosFatura)}
       </span>
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
-      <span className="tx-valor">{fmtAmt(tx.valor * tx.parcelaTotal, hidden)}</span>
-      <span className="tx-valor tx-valor-mes">{fmtAmt(tx.valor, hidden)}</span>
+      <span className="tx-valor"><Mask value={currency(tx.valor * tx.parcelaTotal)} active={hidden} mono /></span>
+      <span className="tx-valor tx-valor-mes"><Mask value={currency(tx.valor)} active={hidden} mono /></span>
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, allTransactions = [], hidden, onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, allTransactions = [], hidden, seguro, onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
   const [merchantName, setMerchantName] = useState("");
   const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
@@ -1072,9 +1082,9 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
             {possiveisDuplicatas.map((d) => (
               <div key={d.id} className="duplicate-warning-item">
                 <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
-                <span>{d.banco} · {d.tipo}</span>
+                <span><Mask value={`${d.banco} · ${d.tipo}`} active={seguro} /></span>
                 <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
-                <span className="tx-valor-total">{fmtAmt(d.valor, hidden)}</span>
+                <span className="tx-valor-total"><Mask value={currency(d.valor)} active={hidden} mono /></span>
               </div>
             ))}
           </div>
@@ -1088,7 +1098,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         <div className="approval-field approval-field-grow">
           <label>Estabelecimento</label>
           <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
-          <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
+          <span className="tx-raw-hint" title={seguro ? "" : tx.estabelecimento}><Mask value={tx.estabelecimento} active={seguro} /></span>
           {tx.paymentData && (
             <span className="tx-raw-hint" style={{ color: "var(--gold)" }} title={JSON.stringify(tx.paymentData)}>
               paymentData: {JSON.stringify(tx.paymentData)}
@@ -1125,7 +1135,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         </div>
         <div className="approval-field">
           <label>Total</label>
-          <span className="tx-valor-total">{fmtAmt(valorMesNum * parcelaTotal, hidden)}</span>
+          <span className="tx-valor-total"><Mask value={currency(valorMesNum * parcelaTotal)} active={hidden} mono /></span>
         </div>
         <div className="approval-actions">
           <button className="confirm-btn" disabled={!merchantName.trim()} onClick={submit}>
@@ -1271,7 +1281,11 @@ function Root() {
       .header-actions { display: flex; align-items: center; gap: 10px; }
       .privacy-controls { display: flex; gap: 6px; }
       .privacy-btn.active { color: var(--gold); border-color: var(--gold); }
-      .peek-btn { cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none; }
+      .mask-wrap { display: inline-flex; align-items: center; gap: 3px; }
+      .mask-text { letter-spacing: 1px; }
+      .mask-text.mono { font-family: 'IBM Plex Mono', monospace; }
+      .mask-peek { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; user-select: none; -webkit-user-select: none; touch-action: none; }
+      .mask-peek:hover { color: var(--text); }
       .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
       .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
       .connect-btn:disabled { opacity: 0.6; cursor: default; }
