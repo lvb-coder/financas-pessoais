@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -43,15 +43,17 @@ const monthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 const monthLabel = (d) =>
   d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }).replace(/^\w/, (c) => c.toUpperCase());
 
-function competencia(dateStr, tipo, banco, fechamentos) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  if (tipo === "Débito") return `${y}-${String(m).padStart(2, "0")}`;
-  const closing = fechamentos[banco] || 1;
-  if (d > closing) {
-    const next = new Date(y, m, 1);
-    return monthKey(next);
+function competencia(dateStr, tipo, banco, fechamentosFatura) {
+  if (tipo === "Débito") return dateStr.slice(0, 7);
+  const closings = fechamentosFatura
+    .filter((f) => f.banco === banco)
+    .slice()
+    .sort((a, b) => a.fechamento.localeCompare(b.fechamento));
+  const txDate = new Date(dateStr + "T12:00:00");
+  for (const c of closings) {
+    if (txDate <= new Date(c.fechamento)) return c.competencia;
   }
-  return `${y}-${String(m).padStart(2, "0")}`;
+  return dateStr.slice(0, 7); // nenhum fechamento futuro cadastrado ainda — usa o mês da própria compra
 }
 
 function matchPattern(patterns, estabelecimento) {
@@ -77,6 +79,7 @@ const mapTransaction = (row) => ({
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
+const mapFechamento = (row) => ({ id: row.id, banco: row.banco, competencia: row.competencia, fechamento: row.fechamento });
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = carregando, null = deslogado
@@ -98,7 +101,7 @@ function Dashboard({ userId }) {
   const [transactions, setTransactions] = useState([]);
   const [merchants, setMerchants] = useState([]);
   const [patterns, setPatterns] = useState([]);
-  const [fechamentos, setFechamentos] = useState({ Nubank: 3, Bradesco: 8 });
+  const [fechamentosFatura, setFechamentosFatura] = useState([]);
   const [cursor, setCursor] = useState(new Date());
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -116,7 +119,7 @@ function Dashboard({ userId }) {
     try {
       const { data, error: fnError } = await supabase.functions.invoke("pluggy-sync");
       if (fnError) throw fnError;
-      setSyncMsg(`${data.novasDespesas} gasto(s) novo(s), ${data.pendentes} pendente(s), ${data.novasRendas} recebimento(s) novo(s). Debug: ${JSON.stringify(data.debug)}`);
+      setSyncMsg(`${data.novasDespesas} gasto(s) novo(s) esperando aprovação, ${data.novasRendas} recebimento(s) novo(s).`);
       const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
       setIncomes(inc || []);
     } catch (e) {
@@ -181,8 +184,9 @@ function Dashboard({ userId }) {
         if (patsErr) throw patsErr;
         setPatterns((pats || []).map(mapPattern));
 
-        const { data: settingsRow } = await supabase.from("settings").select("*").eq("key", "fechamentos").maybeSingle();
-        if (settingsRow) setFechamentos(settingsRow.value);
+        const { data: fech, error: fechErr } = await supabase.from("fechamentos_fatura").select("*");
+        if (fechErr) throw fechErr;
+        setFechamentosFatura((fech || []).map(mapFechamento));
 
         const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
         setIncomes(inc || []);
@@ -212,8 +216,8 @@ function Dashboard({ userId }) {
 
   const currentMonth = monthKey(cursor);
   const monthTx = useMemo(
-    () => transactions.filter((t) => competencia(t.data, t.tipo, t.banco, fechamentos) === currentMonth),
-    [transactions, currentMonth, fechamentos]
+    () => transactions.filter((t) => competencia(t.data, t.tipo, t.banco, fechamentosFatura) === currentMonth),
+    [transactions, currentMonth, fechamentosFatura]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
@@ -240,15 +244,7 @@ function Dashboard({ userId }) {
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
   const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco }) => {
-    const match = matchPattern(patterns, estabelecimento);
-    let status = "pendente_estabelecimento", categoryId = null, merchantId = null;
-    if (match) {
-      const merch = merchants.find((m) => m.id === match.merchantId);
-      merchantId = merch?.id || null;
-      if (merch?.categoryId) { status = "categorizado"; categoryId = merch.categoryId; }
-      else status = "pendente_categoria";
-    }
-    const row = { data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId, status, category_id: categoryId, merchant_id: merchantId };
+    const row = { data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId, status: "pendente_estabelecimento", category_id: null, merchant_id: null };
     const { data: inserted, error } = await supabase.from("transactions").insert(row).select().single();
     if (error) { setError(error.message); return; }
     setTransactions((prev) => [mapTransaction(inserted), ...prev]);
@@ -301,11 +297,11 @@ function Dashboard({ userId }) {
     }));
   };
 
-  // Corrige a categoria de um lançamento já categorizado (só esse, não mexe no estabelecimento)
-  const updateTransactionCategory = async (id, categoryId) => {
-    const { error } = await supabase.from("transactions").update({ category_id: categoryId }).eq("id", id);
+  // Devolve um lançamento já aprovado pra fila de aprovação, editável de novo
+  const rejectTransaction = async (id) => {
+    const { error } = await supabase.from("transactions").update({ status: "pendente_estabelecimento" }).eq("id", id);
     if (error) { setError(error.message); return; }
-    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, categoryId } : t)));
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "pendente_estabelecimento" } : t)));
   };
 
   const removeTransaction = async (id) => {
@@ -327,10 +323,20 @@ function Dashboard({ userId }) {
     setPatterns((prev) => prev.filter((p) => p.pattern !== pattern));
   };
 
-  const updateFechamentos = async (next) => {
-    setFechamentos(next);
-    const { error } = await supabase.from("settings").upsert({ key: "fechamentos", value: next, user_id: userId }, { onConflict: "key,user_id" });
-    if (error) setError(error.message);
+  const saveFechamento = async ({ banco, competencia: comp, fechamento }) => {
+    const { data, error } = await supabase
+      .from("fechamentos_fatura")
+      .upsert({ banco, competencia: comp, fechamento, user_id: userId }, { onConflict: "banco,competencia,user_id" })
+      .select()
+      .single();
+    if (error) { setError(error.message); return; }
+    setFechamentosFatura((prev) => [...prev.filter((f) => !(f.banco === banco && f.competencia === comp)), mapFechamento(data)]);
+  };
+
+  const deleteFechamento = async (id) => {
+    const { error } = await supabase.from("fechamentos_fatura").delete().eq("id", id);
+    if (error) { setError(error.message); return; }
+    setFechamentosFatura((prev) => prev.filter((f) => f.id !== id));
   };
 
   const logout = () => supabase.auth.signOut();
@@ -363,7 +369,7 @@ function Dashboard({ userId }) {
       </header>
 
       <div className="view-tabs">
-        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>Transações</button>
+        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>Cartão de Crédito</button>
         <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>Resumo por categoria</button>
       </div>
 
@@ -399,9 +405,10 @@ function Dashboard({ userId }) {
               transactions={monthTx}
               categories={categories}
               merchants={merchants}
+              patterns={patterns}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
-              onCategoryChange={updateTransactionCategory}
+              onReject={rejectTransaction}
               onRemove={removeTransaction}
             />
           ))}
@@ -443,67 +450,124 @@ function Dashboard({ userId }) {
 
       {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
-        <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
+        <SettingsModal fechamentosFatura={fechamentosFatura} onSaveFechamento={saveFechamento} onDeleteFechamento={deleteFechamento} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, onApprove, onIgnore, onCategoryChange, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, onApprove, onIgnore, onReject, onRemove }) {
   const list = transactions.filter((t) => t.banco === banco && t.tipo === tipo).sort((a, b) => b.data.localeCompare(a.data));
   if (list.length === 0) return null;
-  const totalMes = list.reduce((s, t) => s + (t.status === "categorizado" ? Number(t.valor) : 0), 0);
-  const pendCount = list.filter((t) => t.status !== "categorizado").length;
+
+  const pending = list.filter((t) => t.status !== "categorizado");
+  const approved = list.filter((t) => t.status === "categorizado");
+  const programadas = approved.filter((t) => parseParcela(t.estabelecimento).atual > 1);
+  const novas = approved.filter((t) => parseParcela(t.estabelecimento).atual === 1);
+
+  const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
+  const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
+  const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
   return (
     <section className="bank-group">
       <div className="group-head">
         <h2>{banco} · {tipo}</h2>
         <span className="group-total">
-          {currency(totalMes)}
-          {pendCount > 0 && <span className="of"> · {pendCount} pendente(s)</span>}
+          {currency(totalFatura)}
+          {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
         </span>
       </div>
-      <div className="tx-list">
-        <div className="tx-row tx-row-head">
-          <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span />
-        </div>
-        {list.map((t) =>
-          t.status === "categorizado" ? (
-            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onCategoryChange={onCategoryChange} onRemove={onRemove} />
-          ) : (
-            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} onApprove={onApprove} onIgnore={onIgnore} />
-          )
-        )}
+
+      <div className="fatura-summary">
+        <span>Total da fatura <strong>{currency(totalFatura)}</strong></span>
+        <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong></span>
+        <span>Novas transações <strong>{currency(totalNovas)}</strong></span>
       </div>
+
+      {pending.length > 0 && (
+        <div className="tx-list">
+          <div className="tx-row tx-row-head">
+            <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+          </div>
+          {pending.map((t) => (
+            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} onApprove={onApprove} onIgnore={onIgnore} />
+          ))}
+        </div>
+      )}
+
+      {novas.length > 0 && (
+        <>
+          <p className="tx-subhead">Novas transações</p>
+          <div className="tx-list">
+            <div className="tx-row tx-row-head">
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+            </div>
+            {novas.map((t) => (
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onReject={onReject} onRemove={onRemove} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {programadas.length > 0 && (
+        <>
+          <p className="tx-subhead">Parcelas programadas</p>
+          <div className="tx-list">
+            <div className="tx-row tx-row-head">
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+            </div>
+            {programadas.map((t) => (
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onReject={onReject} onRemove={onRemove} />
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }
 
-function DisplayRow({ tx, categories, merchants, onCategoryChange, onRemove }) {
+function DisplayRow({ tx, categories, merchants, onReject, onRemove }) {
   const merch = merchants.find((m) => m.id === tx.merchantId);
+  const cat = categories.find((c) => c.id === tx.categoryId);
   const parcela = parseParcela(tx.estabelecimento);
   return (
     <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
       <span className="tx-desc" title={tx.estabelecimento}>{merch?.name || tx.estabelecimento}</span>
-      <select className="ledger-cat-select" value={tx.categoryId || ""} onChange={(e) => onCategoryChange(tx.id, e.target.value)}>
-        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
+      <span className="tx-desc">{cat?.name || "—"}</span>
       <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
       <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
-      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Remover"><X size={14} /></button>
+      <button className="ledger-remove" onClick={() => onReject(tx.id)} aria-label="Recusar" title="Recusar e editar de novo"><RotateCcw size={14} /></button>
+      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, onApprove, onIgnore }) {
+function ApprovalRow({ tx, categories, merchants, patterns, onApprove, onIgnore }) {
   const [merchantName, setMerchantName] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
   const parcela = parseParcela(tx.estabelecimento);
 
   useEffect(() => {
+    if (tx.merchantId) {
+      const m = merchants.find((mm) => mm.id === tx.merchantId);
+      if (m) {
+        setMerchantName(m.name);
+        setCategoryId(tx.categoryId || m.categoryId || categories[0]?.id);
+        return;
+      }
+    }
+    const patMatch = matchPattern(patterns, tx.estabelecimento);
+    if (patMatch) {
+      const m = merchants.find((mm) => mm.id === patMatch.merchantId);
+      if (m) {
+        setMerchantName(m.name);
+        if (m.categoryId) setCategoryId(m.categoryId);
+        return;
+      }
+    }
     const alvo = tx.estabelecimento.toLowerCase();
     const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
     if (guess) {
@@ -532,7 +596,7 @@ function ApprovalRow({ tx, categories, merchants, onApprove, onIgnore }) {
       <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
       <button className="confirm-btn" disabled={!merchantName.trim()} onClick={() => onApprove(tx, { merchantName, categoryId })}><Check size={14} /></button>
-      <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Ignorar"><X size={14} /></button>
+      <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
@@ -575,23 +639,55 @@ function AddRawModal({ tipos, bancos, onClose, onSave }) {
   );
 }
 
-function SettingsModal({ fechamentos, setFechamentos, merchants, patterns, categories, onDeletePattern, onClose }) {
+function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento, merchants, patterns, categories, onDeletePattern, onClose }) {
+  const [banco, setBanco] = useState("Nubank");
+  const [competencia, setCompetencia] = useState(monthKey(new Date()));
+  const [fechamento, setFechamento] = useState("");
+
+  const submitFechamento = (e) => {
+    e.preventDefault();
+    if (!fechamento) return;
+    onSaveFechamento({ banco, competencia, fechamento: new Date(fechamento).toISOString() });
+    setFechamento("");
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>Configurações</h3><button onClick={onClose}><X size={18} /></button></div>
-        <p className="modal-hint">Dia de fechamento da fatura — gastos depois desse dia contam para o mês seguinte.</p>
-        <label>Nubank — dia de fechamento
-          <input type="number" min="1" max="31" value={fechamentos.Nubank}
-            onChange={(e) => setFechamentos({ ...fechamentos, Nubank: parseInt(e.target.value) || 1 })} />
-        </label>
-        <label>Bradesco — dia de fechamento
-          <input type="number" min="1" max="31" value={fechamentos.Bradesco}
-            onChange={(e) => setFechamentos({ ...fechamentos, Bradesco: parseInt(e.target.value) || 1 })} />
-        </label>
+
+        <p className="modal-hint">Cada fatura pode ter uma data/hora de fechamento diferente (por causa de feriados e fins de semana). Cadastre o fechamento de cada mês aqui.</p>
+        <form onSubmit={submitFechamento} style={{ display: "grid", gap: 10 }}>
+          <label>Banco
+            <select value={banco} onChange={(e) => setBanco(e.target.value)}>
+              <option value="Nubank">Nubank</option>
+              <option value="Bradesco">Bradesco</option>
+            </select>
+          </label>
+          <label>Mês da fatura
+            <input type="month" value={competencia} onChange={(e) => setCompetencia(e.target.value)} />
+          </label>
+          <label>Data e hora do fechamento
+            <input type="datetime-local" value={fechamento} onChange={(e) => setFechamento(e.target.value)} required />
+          </label>
+          <button type="submit" className="submit-btn">Salvar fechamento</button>
+        </form>
+
+        <p className="modal-hint" style={{ marginTop: 8 }}>Fechamentos cadastrados ({fechamentosFatura.length})</p>
+        <div className="rules-list">
+          {fechamentosFatura.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhum ainda.</p>}
+          {[...fechamentosFatura].sort((a, b) => b.competencia.localeCompare(a.competencia)).map((f) => (
+            <div key={f.id} className="rule-row">
+              <span>{f.banco} · {f.competencia}</span>
+              <span className="of">{new Date(f.fechamento).toLocaleString("pt-BR")}</span>
+              <button className="ledger-remove" onClick={() => onDeleteFechamento(f.id)} aria-label="Apagar fechamento"><X size={13} /></button>
+            </div>
+          ))}
+        </div>
+
         <p className="modal-hint" style={{ marginTop: 8 }}>Estabelecimentos conhecidos ({merchants.length})</p>
         <div className="rules-list">
-          {merchants.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhum ainda — vão surgindo conforme você categoriza pendentes.</p>}
+          {merchants.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhum ainda — vão surgindo conforme você aprova transações.</p>}
           {merchants.map((m) => {
             const cat = categories.find((c) => c.id === m.categoryId);
             const mPatterns = patterns.filter((p) => p.merchantId === m.id);
@@ -650,8 +746,11 @@ function Root() {
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
       .confirm-btn:disabled { opacity: 0.5; cursor: default; }
       .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; overflow-x: auto; }
-      .tx-list { min-width: 640px; }
-      .tx-row { display: grid; grid-template-columns: 52px 1.6fr 1fr 46px 90px 90px 24px; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+      .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+      .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
+      .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
+      .tx-list { min-width: 680px; }
+      .tx-row { display: grid; grid-template-columns: 52px 1.6fr 1fr 46px 90px 90px 24px 24px; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
       .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
       .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
