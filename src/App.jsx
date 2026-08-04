@@ -662,6 +662,7 @@ function Dashboard({ userId }) {
               banco={g.banco}
               tipo={g.tipo}
               transactions={monthTx}
+              allTransactionsGlobal={transactions}
               categories={categories}
               merchants={merchants}
               patterns={patterns}
@@ -745,13 +746,16 @@ function Dashboard({ userId }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
-  const [filtroNovas, setFiltroNovas] = useState("");
-  const [filtroProgramadas, setFiltroProgramadas] = useState("");
+function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
+  const [filtrosNovas, setFiltrosNovas] = useState({ estab: "", categoria: "", fatura: "" });
+  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estab: "", categoria: "", fatura: "" });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
   const approved = all.filter((t) => t.status === "categorizado");
+  const approvedGlobal = (allTransactionsGlobal || transactions).filter(
+    (t) => t.banco === banco && t.tipo === tipo && t.status === "categorizado"
+  );
   const isProgramada = (t) => t.parcelaAtual > 1 || t.data.slice(0, 7) !== competencia(t, fechamentosFatura);
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
@@ -761,16 +765,25 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
+  const aplicarFiltros = (list, filtros) => list.filter((t) => {
+    if (filtros.categoria && t.categoryId !== filtros.categoria) return false;
+    if (filtros.fatura && competencia(t, fechamentosFatura) !== filtros.fatura) return false;
+    if (filtros.estab) {
+      const m = merchants.find((mm) => mm.id === t.merchantId);
+      const nome = (m?.name || t.estabelecimento).toLowerCase();
+      if (!nome.includes(filtros.estab.toLowerCase())) return false;
+    }
+    return true;
+  });
+
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = novas
-    .filter((t) => matchesSearch(t, categories, merchants, q))
-    .filter((t) => !filtroNovas || t.categoryId === filtroNovas)
+  const novasF = aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas)
     .sort((a, b) => b.data.localeCompare(a.data));
-  const programadasF = programadas
-    .filter((t) => matchesSearch(t, categories, merchants, q))
-    .filter((t) => !filtroProgramadas || t.categoryId === filtroProgramadas)
+  const programadasF = aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas)
     .sort((a, b) => b.data.localeCompare(a.data));
+  const faturasNovas = [...new Set(novas.map((t) => competencia(t, fechamentosFatura)))].sort();
+  const faturasProgramadas = [...new Set(programadas.map((t) => competencia(t, fechamentosFatura)))].sort();
 
   return (
     <section className="bank-group">
@@ -794,7 +807,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
           <p className="tx-subhead">Pendentes de aprovação</p>
           <div className="pendentes-cards">
             {pendingF.map((t) => (
-              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approved} onApprove={onApprove} onIgnore={onIgnore} />
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approvedGlobal} onApprove={onApprove} onIgnore={onIgnore} />
             ))}
           </div>
         </>
@@ -804,10 +817,17 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <>
           <div className="tx-subhead-row">
             <p className="tx-subhead">Novas transações</p>
-            <select className="filter-select" value={filtroNovas} onChange={(e) => setFiltroNovas(e.target.value)}>
-              <option value="">Todas as categorias</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <div className="filter-row">
+              <input className="filter-input" type="text" placeholder="Estabelecimento…" value={filtrosNovas.estab} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, estab: e.target.value })} />
+              <select className="filter-select" value={filtrosNovas.categoria} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, categoria: e.target.value })}>
+                <option value="">Todas as categorias</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <select className="filter-select" value={filtrosNovas.fatura} onChange={(e) => setFiltrosNovas({ ...filtrosNovas, fatura: e.target.value })}>
+                <option value="">Todas as faturas</option>
+                {faturasNovas.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
           </div>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
@@ -824,10 +844,17 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <>
           <div className="tx-subhead-row">
             <p className="tx-subhead">Parcelas programadas</p>
-            <select className="filter-select" value={filtroProgramadas} onChange={(e) => setFiltroProgramadas(e.target.value)}>
-              <option value="">Todas as categorias</option>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <div className="filter-row">
+              <input className="filter-input" type="text" placeholder="Estabelecimento…" value={filtrosProgramadas.estab} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, estab: e.target.value })} />
+              <select className="filter-select" value={filtrosProgramadas.categoria} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, categoria: e.target.value })}>
+                <option value="">Todas as categorias</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <select className="filter-select" value={filtrosProgramadas.fatura} onChange={(e) => setFiltrosProgramadas({ ...filtrosProgramadas, fatura: e.target.value })}>
+                <option value="">Todas as faturas</option>
+                {faturasProgramadas.map((f) => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
           </div>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
@@ -900,11 +927,12 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
+  const nomeCompleto = (pixCredito ? `Pix no Crédito - ${merchantName.trim()}` : merchantName.trim()).toLowerCase();
   const possiveisDuplicatas = allTransactions.filter((t) => {
     if (t.id === tx.id || !t.merchantId) return false;
     if (competencia(t, fechamentosFatura) !== fatura) return false;
     const m = merchants.find((mm) => mm.id === t.merchantId);
-    if (!m || m.name.trim().toLowerCase() !== merchantName.trim().toLowerCase()) return false;
+    if (!m || m.name.trim().toLowerCase() !== nomeCompleto) return false;
     if (t.categoryId !== categoryId) return false;
     return Math.abs(t.valor - valorMesNum) <= 5;
   });
@@ -1181,9 +1209,11 @@ function Root() {
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
-      .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; }
+      .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; flex-wrap: wrap; gap: 8px; }
       .tx-subhead-row .tx-subhead { margin: 0; }
+      .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
       .filter-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--muted); font-size: 11px; font-family: inherit; }
+      .filter-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--text); font-size: 11px; font-family: inherit; width: 120px; }
       .pendentes-cards { display: grid; gap: 10px; }
       .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
       .approval-card-editing { background: rgba(95,163,119,0.08); border-color: var(--ok); }
