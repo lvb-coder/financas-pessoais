@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Wallet, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, TrendingUp } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, TrendingUp } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -59,6 +59,16 @@ function matchPattern(patterns, estabelecimento) {
   return patterns.find((p) => alvo.includes(p.pattern));
 }
 
+function parseParcela(estabelecimento) {
+  const m = (estabelecimento || "").trim().match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*$/);
+  if (m) return { atual: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+  return { atual: 1, total: 1 };
+}
+
+function stripParcela(estabelecimento) {
+  return (estabelecimento || "").replace(/\s*\d{1,2}\s*\/\s*\d{1,2}\s*$/, "").trim();
+}
+
 // -- Mapeadores entre linhas do Supabase (snake_case) e o formato usado na UI --
 const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, limit: row.limit_value });
 const mapTransaction = (row) => ({
@@ -97,6 +107,7 @@ function Dashboard({ userId }) {
   const [incomes, setIncomes] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
+  const [view, setView] = useState("transacoes");
 
   const syncBank = async () => {
     setSyncing(true);
@@ -205,33 +216,7 @@ function Dashboard({ userId }) {
     [transactions, currentMonth, fechamentos]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
-  const pendentesEstabelecimento = useMemo(() => {
-    const map = new Map();
-    transactions
-      .filter((t) => t.status === "pendente_estabelecimento")
-      .forEach((t) => {
-        const key = t.estabelecimento.toLowerCase();
-        if (!map.has(key)) map.set(key, { estabelecimento: t.estabelecimento, ids: [], count: 0, total: 0 });
-        const g = map.get(key);
-        g.ids.push(t.id);
-        g.count += 1;
-        g.total += Number(t.valor);
-      });
-    return Array.from(map.values());
-  }, [transactions]);
-
-  const pendentesCategoria = useMemo(() => {
-    const map = new Map();
-    transactions
-      .filter((t) => t.status === "pendente_categoria")
-      .forEach((t) => {
-        if (!map.has(t.merchantId)) map.set(t.merchantId, { merchantId: t.merchantId, count: 0, total: 0 });
-        const g = map.get(t.merchantId);
-        g.count += 1;
-        g.total += Number(t.valor);
-      });
-    return Array.from(map.values());
-  }, [transactions]);
+  const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -270,15 +255,16 @@ function Dashboard({ userId }) {
     setShowAdd(false);
   };
 
-  // Etapa 1: identifica o estabelecimento (sem categoria ainda)
-  const resolveEstabelecimento = async ({ merchantName, pattern }) => {
+  // Aprova uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez
+  const resolveApproval = async (tx, { merchantName, categoryId }) => {
     const name = merchantName.trim();
-    const keyword = (pattern || "").toLowerCase().trim();
-    if (!name || !keyword) return;
+    if (!name || !categoryId) return;
+    const pattern = stripParcela(tx.estabelecimento).toLowerCase();
+    if (!pattern) return;
 
     const { data: merchant, error: merchErr } = await supabase
       .from("merchants")
-      .upsert({ name, user_id: userId }, { onConflict: "name,user_id", ignoreDuplicates: false })
+      .upsert({ name, category_id: categoryId, user_id: userId }, { onConflict: "name,user_id" })
       .select()
       .single();
     if (merchErr) { setError(merchErr.message); return; }
@@ -286,39 +272,33 @@ function Dashboard({ userId }) {
 
     const { error: patErr } = await supabase
       .from("merchant_patterns")
-      .upsert({ pattern: keyword, merchant_id: merchant.id, user_id: userId }, { onConflict: "pattern,user_id" });
+      .upsert({ pattern, merchant_id: merchant.id, user_id: userId }, { onConflict: "pattern,user_id" });
     if (patErr) { setError(patErr.message); return; }
-    setPatterns((prev) => [...prev.filter((p) => p.pattern !== keyword), { pattern: keyword, merchantId: merchant.id }]);
+    setPatterns((prev) => [...prev.filter((p) => p.pattern !== pattern), { pattern, merchantId: merchant.id }]);
 
-    const newStatus = merchant.category_id ? "categorizado" : "pendente_categoria";
-    const { error: bulkErr } = await supabase
+    // resolve todos os pendentes que batem com o padrão (outras parcelas, outras variações)
+    const { error: bulkErr1 } = await supabase
       .from("transactions")
-      .update({ status: newStatus, merchant_id: merchant.id, category_id: merchant.category_id || null })
-      .eq("status", "pendente_estabelecimento")
-      .ilike("estabelecimento", `%${keyword}%`);
-    if (bulkErr) { setError(bulkErr.message); return; }
-    setTransactions((prev) => prev.map((t) =>
-      t.status === "pendente_estabelecimento" && t.estabelecimento.toLowerCase().includes(keyword)
-        ? { ...t, status: newStatus, merchantId: merchant.id, categoryId: merchant.category_id || null }
-        : t
-    ));
-  };
+      .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id })
+      .neq("status", "categorizado")
+      .ilike("estabelecimento", `%${pattern}%`);
+    if (bulkErr1) { setError(bulkErr1.message); return; }
 
-  // Etapa 2: define a categoria de um estabelecimento já identificado
-  const resolveCategoria = async (merchantId, categoryId) => {
-    const { error: merchErr } = await supabase.from("merchants").update({ category_id: categoryId }).eq("id", merchantId);
-    if (merchErr) { setError(merchErr.message); return; }
-    setMerchants((prev) => prev.map((m) => (m.id === merchantId ? { ...m, categoryId } : m)));
-
-    const { error: bulkErr } = await supabase
+    // resolve também outros pendentes já linkados a esse estabelecimento por um padrão diferente
+    const { error: bulkErr2 } = await supabase
       .from("transactions")
       .update({ status: "categorizado", category_id: categoryId })
       .eq("status", "pendente_categoria")
-      .eq("merchant_id", merchantId);
-    if (bulkErr) { setError(bulkErr.message); return; }
-    setTransactions((prev) => prev.map((t) =>
-      t.status === "pendente_categoria" && t.merchantId === merchantId ? { ...t, status: "categorizado", categoryId } : t
-    ));
+      .eq("merchant_id", merchant.id);
+    if (bulkErr2) { setError(bulkErr2.message); return; }
+
+    setTransactions((prev) => prev.map((t) => {
+      if (t.status === "categorizado") return t;
+      if (t.estabelecimento.toLowerCase().includes(pattern) || t.merchantId === merchant.id) {
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id };
+      }
+      return t;
+    }));
   };
 
   // Corrige a categoria de um lançamento já categorizado (só esse, não mexe no estabelecimento)
@@ -332,12 +312,6 @@ function Dashboard({ userId }) {
     const { error } = await supabase.from("transactions").delete().eq("id", id);
     if (error) { setError(error.message); return; }
     setTransactions((prev) => prev.filter((t) => t.id !== id));
-  };
-
-  const removeTransactionGroup = async (ids) => {
-    const { error } = await supabase.from("transactions").delete().in("id", ids);
-    if (error) { setError(error.message); return; }
-    setTransactions((prev) => prev.filter((t) => !ids.includes(t.id)));
   };
 
   const updateLimit = async (id, value) => {
@@ -388,18 +362,17 @@ function Dashboard({ userId }) {
         </div>
       </header>
 
+      <div className="view-tabs">
+        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}>Transações</button>
+        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}>Resumo por categoria</button>
+      </div>
+
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
 
-      {pendentesEstabelecimento.length > 0 && (
+      {pendingCount > 0 && (
         <div className="banner banner-pending">
           <Inbox size={16} />
-          <span>{pendentesEstabelecimento.length} estabelecimento(s) não identificado(s), {pendentesEstabelecimento.reduce((s, g) => s + g.count, 0)} lançamento(s) no total.</span>
-        </div>
-      )}
-      {pendentesCategoria.length > 0 && (
-        <div className="banner banner-pending">
-          <Inbox size={16} />
-          <span>{pendentesCategoria.length} estabelecimento(s) sem categoria ainda, somando {currency(pendentesCategoria.reduce((s, g) => s + g.total, 0))}.</span>
+          <span>{pendingCount} lançamento(s) esperando aprovação neste mês.</span>
         </div>
       )}
 
@@ -427,86 +400,63 @@ function Dashboard({ userId }) {
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> Nova transação</button>
       </div>
 
-      {pendentesEstabelecimento.length > 0 && (
-        <section className="pendentes">
-          <h2 className="section-title"><Inbox size={16} /> Estabelecimentos não identificados</h2>
+      {view === "transacoes" && (
+        <>
           <datalist id="merchants-list">
             {merchants.map((m) => <option key={m.id} value={m.name} />)}
           </datalist>
-          <div className="pendentes-list">
-            {pendentesEstabelecimento.map((g) => (
-              <EstabelecimentoPendenteRow key={g.estabelecimento} group={g} onResolve={resolveEstabelecimento} onRemoveGroup={removeTransactionGroup} />
-            ))}
-          </div>
-        </section>
+          {[
+            { banco: "Nubank", tipo: "Crédito" },
+            { banco: "Bradesco", tipo: "Crédito" },
+          ].map((g) => (
+            <BankGroupSection
+              key={g.banco + g.tipo}
+              banco={g.banco}
+              tipo={g.tipo}
+              transactions={monthTx}
+              categories={categories}
+              merchants={merchants}
+              onApprove={resolveApproval}
+              onIgnore={removeTransaction}
+              onCategoryChange={updateTransactionCategory}
+              onRemove={removeTransaction}
+            />
+          ))}
+        </>
       )}
 
-      {pendentesCategoria.length > 0 && (
-        <section className="pendentes">
-          <h2 className="section-title"><Inbox size={16} /> Estabelecimentos sem categoria</h2>
-          <div className="pendentes-list">
-            {pendentesCategoria.map((g) => (
-              <CategoriaPendenteRow key={g.merchantId} group={g} merchants={merchants} categories={categories} onResolve={resolveCategoria} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <section className="groups">
-        {Object.entries(GROUPS).map(([key, meta]) => (
-          <div key={key} className="group-card" style={{ "--group-color": meta.color }}>
-            <div className="group-head">
-              <span className="dot" />
-              <h2>{meta.label}</h2>
-              <span className="group-total">{currency(totals[key].spent)} <span className="of">/ {currency(totals[key].planned)}</span></span>
-            </div>
-            <div className="cat-list">
-              {categories.filter((c) => c.group === key).map((c) => {
-                const spent = spentByCategory[c.id] || 0;
-                const pct = c.limit > 0 ? Math.min(100, (spent / c.limit) * 100) : 0;
-                const over = c.limit > 0 && spent > c.limit;
-                return (
-                  <div key={c.id} className="cat-row">
-                    <div className="cat-row-top">
-                      <span className="cat-name">{c.name}</span>
-                      <span className={"cat-values" + (over ? " over" : "")}>
-                        {currency(spent)} <span className="of">/</span>
-                        <input className="limit-input" type="number" value={c.limit} onChange={(e) => updateLimit(c.id, e.target.value)} />
-                      </span>
+      {view === "resumo" && (
+        <section className="groups">
+          {Object.entries(GROUPS).map(([key, meta]) => (
+            <div key={key} className="group-card" style={{ "--group-color": meta.color }}>
+              <div className="group-head">
+                <span className="dot" />
+                <h2>{meta.label}</h2>
+                <span className="group-total">{currency(totals[key].spent)} <span className="of">/ {currency(totals[key].planned)}</span></span>
+              </div>
+              <div className="cat-list">
+                {categories.filter((c) => c.group === key).map((c) => {
+                  const spent = spentByCategory[c.id] || 0;
+                  const pct = c.limit > 0 ? Math.min(100, (spent / c.limit) * 100) : 0;
+                  const over = c.limit > 0 && spent > c.limit;
+                  return (
+                    <div key={c.id} className="cat-row">
+                      <div className="cat-row-top">
+                        <span className="cat-name">{c.name}</span>
+                        <span className={"cat-values" + (over ? " over" : "")}>
+                          {currency(spent)} <span className="of">/</span>
+                          <input className="limit-input" type="number" value={c.limit} onChange={(e) => updateLimit(c.id, e.target.value)} />
+                        </span>
+                      </div>
+                      <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--warn)" : "var(--group-color)" }} /></div>
                     </div>
-                    <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--warn)" : "var(--group-color)" }} /></div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        ))}
-      </section>
-
-      <section className="ledger">
-        <h2 className="section-title"><Wallet size={16} /> Lançamentos categorizados do mês</h2>
-        {categorizadas.length === 0 ? (
-          <p className="empty">Nenhum lançamento categorizado este mês ainda.</p>
-        ) : (
-          <div className="ledger-list">
-            {[...categorizadas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
-              const merch = merchants.find((m) => m.id === t.merchantId);
-              return (
-                <div key={t.id} className="ledger-row">
-                  <span className="ledger-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                  <span className="ledger-desc">{merch?.name || t.estabelecimento}</span>
-                  <span className="ledger-tipo-banco">{t.tipo} · {t.banco}</span>
-                  <select className="ledger-cat-select" value={t.categoryId || ""} onChange={(e) => updateTransactionCategory(t.id, e.target.value)}>
-                    {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                  <span className="ledger-amount">{currency(t.valor)}</span>
-                  <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Remover"><X size={14} /></button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+          ))}
+        </section>
+      )}
 
       {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
@@ -516,56 +466,90 @@ function Dashboard({ userId }) {
   );
 }
 
-function EstabelecimentoPendenteRow({ group, onResolve, onRemoveGroup }) {
-  const [merchantName, setMerchantName] = useState(group.estabelecimento);
-  const [pattern, setPattern] = useState(group.estabelecimento);
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, onApprove, onIgnore, onCategoryChange, onRemove }) {
+  const list = transactions.filter((t) => t.banco === banco && t.tipo === tipo).sort((a, b) => b.data.localeCompare(a.data));
+  if (list.length === 0) return null;
+  const totalMes = list.reduce((s, t) => s + (t.status === "categorizado" ? Number(t.valor) : 0), 0);
+  const pendCount = list.filter((t) => t.status !== "categorizado").length;
 
   return (
-    <div className="pendente-row">
-      <div className="pendente-info">
-        <span className="pendente-estab">{group.estabelecimento}</span>
-        <span className="of">{group.count} lançamento(s) · {currency(group.total)}</span>
+    <section className="bank-group">
+      <div className="group-head">
+        <h2>{banco} · {tipo}</h2>
+        <span className="group-total">
+          {currency(totalMes)}
+          {pendCount > 0 && <span className="of"> · {pendCount} pendente(s)</span>}
+        </span>
       </div>
-      <label className="pattern-label">
-        Estabelecimento (existente ou novo)
-        <input className="pattern-input" type="text" list="merchants-list" placeholder="Ex: Shein"
-          value={merchantName} onChange={(e) => setMerchantName(e.target.value)} />
-      </label>
-      <label className="pattern-label">
-        Padrão no extrato que identifica esse estabelecimento
-        <input className="pattern-input" type="text" value={pattern} onChange={(e) => setPattern(e.target.value)} />
-      </label>
-      <div className="pendente-actions">
-        <button className="confirm-btn" disabled={!merchantName.trim() || !pattern.trim()}
-          onClick={() => onResolve({ merchantName, pattern })}>
-          <Check size={14} /> Identificar
-        </button>
-        <button className="ignore-btn" onClick={() => onRemoveGroup(group.ids)}>
-          Ignorar {group.count > 1 ? `todos (${group.count})` : ""}
-        </button>
+      <div className="tx-list">
+        <div className="tx-row tx-row-head">
+          <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span />
+        </div>
+        {list.map((t) =>
+          t.status === "categorizado" ? (
+            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onCategoryChange={onCategoryChange} onRemove={onRemove} />
+          ) : (
+            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} onApprove={onApprove} onIgnore={onIgnore} />
+          )
+        )}
       </div>
+    </section>
+  );
+}
+
+function DisplayRow({ tx, categories, merchants, onCategoryChange, onRemove }) {
+  const merch = merchants.find((m) => m.id === tx.merchantId);
+  const parcela = parseParcela(tx.estabelecimento);
+  return (
+    <div className="tx-row">
+      <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
+      <span className="tx-desc" title={tx.estabelecimento}>{merch?.name || tx.estabelecimento}</span>
+      <select className="ledger-cat-select" value={tx.categoryId || ""} onChange={(e) => onCategoryChange(tx.id, e.target.value)}>
+        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
+      <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
+      <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
+      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Remover"><X size={14} /></button>
     </div>
   );
 }
 
-function CategoriaPendenteRow({ group, merchants, categories, onResolve }) {
-  const merchant = merchants.find((m) => m.id === group.merchantId);
+function ApprovalRow({ tx, categories, merchants, onApprove, onIgnore }) {
+  const [merchantName, setMerchantName] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
+  const parcela = parseParcela(tx.estabelecimento);
+
+  useEffect(() => {
+    const alvo = tx.estabelecimento.toLowerCase();
+    const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
+    if (guess) {
+      setMerchantName(guess.name);
+      if (guess.categoryId) setCategoryId(guess.categoryId);
+    } else {
+      setMerchantName(stripParcela(tx.estabelecimento));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleMerchantChange = (value) => {
+    setMerchantName(value);
+    const match = merchants.find((m) => m.name.toLowerCase() === value.trim().toLowerCase());
+    if (match?.categoryId) setCategoryId(match.categoryId);
+  };
 
   return (
-    <div className="pendente-row">
-      <div className="pendente-info">
-        <span className="pendente-estab">{merchant?.name || "—"}</span>
-        <span className="of">{group.count} lançamento(s) · {currency(group.total)}</span>
-      </div>
-      <div className="pendente-actions">
-        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-          {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <button className="confirm-btn" onClick={() => onResolve(group.merchantId, categoryId)}>
-          <Check size={14} /> Categorizar
-        </button>
-      </div>
+    <div className="tx-row tx-row-pending">
+      <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
+      <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
+      <select className="ledger-cat-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
+      <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
+      <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
+      <button className="confirm-btn" disabled={!merchantName.trim()} onClick={() => onApprove(tx, { merchantName, categoryId })}><Check size={14} /></button>
+      <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Ignorar"><X size={14} /></button>
     </div>
   );
 }
@@ -676,20 +660,24 @@ function Root() {
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
       .section-title { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
-      .pendentes { background: var(--surface); border: 1px solid var(--gold); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
-      .pendentes-list { display: grid; gap: 12px; }
-      .pendente-row { display: grid; gap: 8px; padding: 10px 0; border-bottom: 1px dashed var(--line); }
-      .pendente-row:last-child { border-bottom: none; }
-      .pendente-info { display: flex; flex-direction: column; gap: 2px; }
-      .pendente-estab { font-weight: 600; }
-      .pattern-label { display: block; font-size: 11px; color: var(--muted); margin: 6px 0; }
-      .pattern-input { width: 100%; margin-top: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text); font-size: 13px; font-family: inherit; box-sizing: border-box; }
-      .pendente-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-      .pendente-actions select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text); font-size: 13px; }
+      .view-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+      .tab-btn { background: var(--surface); border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+      .tab-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--gold); font-weight: 600; }
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
-      .ignore-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
-      .ignore-btn:hover { border-color: var(--warn); color: var(--warn); }
+      .confirm-btn:disabled { opacity: 0.5; cursor: default; }
+      .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; overflow-x: auto; }
+      .tx-list { min-width: 640px; }
+      .tx-row { display: grid; grid-template-columns: 52px 1.6fr 1fr 46px 90px 90px 24px; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+      .tx-row:last-child { border-bottom: none; }
+      .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
+      .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
+      .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
+      .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tx-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--text); font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box; }
+      .tx-parcela { color: var(--muted); font-family: 'IBM Plex Mono', monospace; text-align: center; }
+      .tx-valor { font-family: 'IBM Plex Mono', monospace; text-align: right; }
+      .tx-valor-mes { font-weight: 600; }
       .groups { display: grid; gap: 14px; margin-bottom: 24px; }
       .group-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
       .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -707,10 +695,8 @@ function Root() {
       .cat-bar-fill { height: 100%; border-radius: 3px; transition: width .3s; }
       .empty { color: var(--muted); font-size: 14px; padding: 20px 0; text-align: center; }
       .ledger-list { display: grid; }
-      .ledger-row { display: grid; grid-template-columns: 40px 1fr auto auto auto 24px; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
-      .ledger-tipo-banco { color: var(--muted); font-size: 11px; white-space: nowrap; }
+      .ledger-row { display: grid; grid-template-columns: 40px 1fr auto; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
       .ledger-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
-      .ledger-cat { color: var(--muted); font-size: 12px; }
       .ledger-cat-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--muted); font-size: 11px; font-family: inherit; max-width: 120px; }
       .ledger-amount { font-family: 'IBM Plex Mono', monospace; font-weight: 600; }
       .ledger-remove { background: none; border: none; color: var(--muted); cursor: pointer; display: flex; }
@@ -726,10 +712,6 @@ function Root() {
       .submit-btn { background: var(--gold); color: #0F1613; border: none; border-radius: 999px; padding: 10px; font-weight: 600; cursor: pointer; margin-top: 4px; }
       .rules-list { display: grid; gap: 6px; max-height: 160px; overflow-y: auto; }
       .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
-      @media (max-width: 420px) {
-        .ledger-row { grid-template-columns: 34px 1fr auto auto 20px; }
-        .ledger-tipo-banco { display: none; }
-      }
     `}</style>
   );
 }
