@@ -212,6 +212,18 @@ const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.cate
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
 const mapFechamento = (row) => ({ id: row.id, banco: row.banco, competencia: row.competencia, fechamento: row.fechamento });
 
+function loadLS(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveLS(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = carregando, null = deslogado
 
@@ -241,11 +253,26 @@ function Dashboard({ userId }) {
   const [incomes, setIncomes] = useState([]);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
-  const [view, setView] = useState("transacoes");
+  const [view, setView] = useState(() => loadLS("view", "transacoes"));
   const [search, setSearch] = useState("");
-  const [privacyMode, setPrivacyMode] = useState("normal"); // normal | privado | seguro
+  const [subView, setSubView] = useState(() => loadLS("subView", "mensal")); // mensal | geral
+  const [privacyMode, setPrivacyMode] = useState(() => loadLS("privacyMode", "normal")); // normal | privado | seguro
+  const [geralFiltros, setGeralFiltros] = useState(() => loadLS("geralFiltros", { estabs: [], categorias: [], bancos: [], datas: [] }));
+  const [geralSort, setGeralSort] = useState(() => loadLS("geralSort", { key: "data", dir: -1 }));
   const hidden = privacyMode !== "normal";
   const seguro = privacyMode === "seguro";
+
+  useEffect(() => { saveLS("view", view); }, [view]);
+  useEffect(() => { saveLS("subView", subView); }, [subView]);
+  useEffect(() => { saveLS("privacyMode", privacyMode); }, [privacyMode]);
+  useEffect(() => { saveLS("geralFiltros", geralFiltros); }, [geralFiltros]);
+  useEffect(() => { saveLS("geralSort", geralSort); }, [geralSort]);
+
+  const resetFiltros = () => {
+    setGeralFiltros({ estabs: [], categorias: [], bancos: [], datas: [] });
+    setGeralSort({ key: "data", dir: -1 });
+    setCursor(new Date());
+  };
 
   useEffect(() => {
     document.title = seguro ? "•••" : "Minhas Finanças";
@@ -662,6 +689,18 @@ function Dashboard({ userId }) {
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> <Mask value="Nova transação" active={seguro} /></button>
       </div>
 
+      {view === "transacoes" && (
+        <div className="subview-tabs">
+          <button className={"subtab-btn" + (subView === "mensal" ? " active" : "")} onClick={() => setSubView("mensal")}>Por mês</button>
+          <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Gastos gerais</button>
+          {subView === "geral" && (
+            <button className="subtab-btn reset-btn" onClick={resetFiltros} title="Limpar filtros, voltar pra ordenação padrão e mês atual">
+              <RotateCcw size={12} /> Redefinir
+            </button>
+          )}
+        </div>
+      )}
+
       {view === "transacoes" && search.trim() && (
         <section className="search-panel">
           <p className="tx-subhead" style={{ margin: "0 0 8px" }}>
@@ -697,7 +736,7 @@ function Dashboard({ userId }) {
         </section>
       )}
 
-      {view === "transacoes" && (
+      {view === "transacoes" && subView === "mensal" && (
         <>
           <datalist id="merchants-list">
             {merchants.map((m) => <option key={m.id} value={m.name} />)}
@@ -726,6 +765,25 @@ function Dashboard({ userId }) {
             />
           ))}
         </>
+      )}
+
+      {view === "transacoes" && subView === "geral" && (
+        <GeralView
+          transactions={transactions}
+          categories={categories}
+          merchants={merchants}
+          patterns={patterns}
+          fechamentosFatura={fechamentosFatura}
+          hidden={hidden}
+          seguro={seguro}
+          filtros={geralFiltros}
+          setFiltros={setGeralFiltros}
+          sort={geralSort}
+          setSort={setGeralSort}
+          onApprove={resolveApproval}
+          onRevert={rejectTransaction}
+          onRemove={removeTransaction}
+        />
       )}
 
       {view === "lixeira" && (
@@ -814,12 +872,15 @@ function SortableHead({ sort, setSort, seguro }) {
         </button>
       ))}
       <span className="tx-head-parcela">
-        <button className="tx-head-subbtn" onClick={() => click("parcelaTotal")} title="Ordenar por quantidade de parcelas">
-          <Mask value="Qtd" active={seguro} />{arrow("parcelaTotal")}
-        </button>
-        <button className="tx-head-subbtn" onClick={() => click("parcelaAtual")} title="Ordenar por número da parcela atual">
-          <Mask value="Nº" active={seguro} />{arrow("parcelaAtual")}
-        </button>
+        <span className="tx-head-parcela-title"><Mask value="Parcelamento" active={seguro} /></span>
+        <span className="tx-head-parcela-sub">
+          <button className="tx-head-subbtn" onClick={() => click("parcelaTotal")} title="Ordenar por quantidade de parcelas">
+            Qtd{arrow("parcelaTotal")}
+          </button>
+          <button className="tx-head-subbtn" onClick={() => click("parcelaAtual")} title="Ordenar por número da parcela atual">
+            Nº{arrow("parcelaAtual")}
+          </button>
+        </span>
       </span>
       <button className="tx-head-btn" onClick={() => click("total")}><Mask value="Valor Total" active={seguro} />{arrow("total")}</button>
       <button className="tx-head-btn" onClick={() => click("mes")}><Mask value="Valor/Mês" active={seguro} />{arrow("mes")}</button>
@@ -857,9 +918,79 @@ function MultiFilter({ label, options, selected, onChange, seguro }) {
   );
 }
 
+function GeralView({ transactions, categories, merchants, patterns, fechamentosFatura, hidden, seguro, filtros, setFiltros, sort, setSort, onApprove, onRevert, onRemove }) {
+  const all = transactions.filter((t) => t.status === "categorizado" && t.tipo === "Crédito");
+  const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
+
+  const opcoes = {
+    bancos: [...new Set(all.map((t) => t.banco))].sort(),
+    estabs: [...new Set(all.map(nomeDe))].sort(),
+    categorias: [...new Set(all.map((t) => t.categoryId))]
+      .map((id) => categories.find((c) => c.id === id))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    datas: [...new Set(all.map((t) => t.data))].sort(),
+  };
+
+  const filtrados = all.filter((t) => {
+    if (filtros.bancos.length && !filtros.bancos.includes(t.banco)) return false;
+    if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
+    if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
+    if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
+    return true;
+  });
+
+  const sortValue = (t, key) => {
+    switch (key) {
+      case "data": return t.data;
+      case "estabelecimento": return nomeDe(t).toLowerCase();
+      case "categoria": return (categories.find((c) => c.id === t.categoryId)?.name || "").toLowerCase();
+      case "fatura": return competencia(t, fechamentosFatura);
+      case "parcelaTotal": return t.parcelaTotal;
+      case "parcelaAtual": return t.parcelaAtual;
+      case "total": return t.valor * t.parcelaTotal;
+      case "mes": return t.valor;
+      default: return t.data;
+    }
+  };
+  const ordenados = [...filtrados].sort((a, b) => {
+    const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
+    if (va < vb) return -1 * sort.dir;
+    if (va > vb) return 1 * sort.dir;
+    return 0;
+  });
+
+  const total = filtrados.reduce((s, t) => s + Number(t.valor), 0);
+
+  return (
+    <section className="bank-group">
+      <div className="group-head">
+        <h2><Mask value="Gastos gerais no cartão de crédito" active={seguro} /></h2>
+        <span className="group-total"><Mask value={currency(total)} active={hidden} mono /> <span className="of">· {filtrados.length} lançamento(s)</span></span>
+      </div>
+
+      <div className="filter-row" style={{ marginBottom: 14 }}>
+        <MultiFilter label="Bancos" options={opcoes.bancos.map((b) => ({ value: b, label: b }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
+        <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
+        <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={filtros.estabs} onChange={(v) => setFiltros({ ...filtros, estabs: v })} seguro={seguro} />
+        <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtros.categorias} onChange={(v) => setFiltros({ ...filtros, categorias: v })} seguro={seguro} />
+      </div>
+
+      {ordenados.length === 0 ? (
+        <p className="empty">Nada encontrado.</p>
+      ) : (
+        <div className="tx-list">
+          <SortableHead sort={sort} setSort={setSort} seguro={seguro} />
+          {ordenados.map((t) => (
+            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
-  const [filtrosNovas, setFiltrosNovas] = useState({ estabs: [], categorias: [], datas: [] });
-  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estabs: [], categorias: [], datas: [] });
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -879,13 +1010,6 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
   const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
-
-  const aplicarFiltros = (list, filtros) => list.filter((t) => {
-    if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
-    if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
-    if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
-    return true;
-  });
 
   const sortValue = (t, key) => {
     switch (key) {
@@ -910,19 +1034,8 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas), sortNovas);
-  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas), sortProgramadas);
-
-  const opcoesFiltro = (list) => ({
-    estabs: [...new Set(list.map(nomeDe))].sort(),
-    categorias: [...new Set(list.map((t) => t.categoryId))]
-      .map((id) => categories.find((c) => c.id === id))
-      .filter(Boolean)
-      .sort((a, b) => a.name.localeCompare(b.name)),
-    datas: [...new Set(list.map((t) => t.data))].sort(),
-  });
-  const opcoesNovas = opcoesFiltro(novas);
-  const opcoesProgramadas = opcoesFiltro(programadas);
+  const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q)), sortNovas);
+  const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), sortProgramadas);
 
   return (
     <section className="bank-group">
@@ -954,14 +1067,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {novasF.length > 0 && (
         <>
-          <div className="tx-subhead-row">
-            <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
-            <div className="filter-row">
-              <MultiFilter label="Datas" options={opcoesNovas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosNovas.datas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, datas: v })} seguro={seguro} />
-              <MultiFilter label="Estabelecimentos" options={opcoesNovas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosNovas.estabs} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, estabs: v })} seguro={seguro} />
-              <MultiFilter label="Categorias" options={opcoesNovas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosNovas.categorias} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, categorias: v })} seguro={seguro} />
-            </div>
-          </div>
+          <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
           <div className="tx-list">
             <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} />
             {novasF.map((t) => (
@@ -973,14 +1079,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {programadasF.length > 0 && (
         <>
-          <div className="tx-subhead-row">
-            <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
-            <div className="filter-row">
-              <MultiFilter label="Datas" options={opcoesProgramadas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosProgramadas.datas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, datas: v })} seguro={seguro} />
-              <MultiFilter label="Estabelecimentos" options={opcoesProgramadas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosProgramadas.estabs} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, estabs: v })} seguro={seguro} />
-              <MultiFilter label="Categorias" options={opcoesProgramadas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosProgramadas.categorias} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, categorias: v })} seguro={seguro} />
-            </div>
-          </div>
+          <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
           <div className="tx-list">
             <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} />
             {programadasF.map((t) => (
@@ -1341,6 +1440,10 @@ function Root() {
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
       .section-title { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
       .view-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+      .subview-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+      .subtab-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+      .subtab-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--ok); font-weight: 600; }
+      .reset-btn { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--warn); border-color: var(--warn); }
       .tab-btn { background: var(--surface); border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
       .tab-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--gold); font-weight: 600; }
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
@@ -1375,7 +1478,9 @@ function Root() {
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
       .tx-list { min-width: 740px; }
-      .tx-head-parcela { display: flex; flex-direction: column; gap: 1px; }
+      .tx-head-parcela { display: flex; flex-direction: column; gap: 2px; }
+      .tx-head-parcela-title { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .tx-head-parcela-sub { display: flex; gap: 6px; }
       .tx-head-subbtn { background: none; border: none; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
       .tx-head-subbtn:hover { color: var(--text); }
       .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 58px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
