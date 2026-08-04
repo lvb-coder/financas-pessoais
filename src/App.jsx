@@ -132,6 +132,17 @@ function matchesSearch(tx, categories, merchants, query) {
   return false;
 }
 
+// Duas compras no mesmo estabelecimento + categoria, com valor mensal a até R$5 de diferença
+function isPossibleDuplicate(tx, all) {
+  return all.some((other) =>
+    other.id !== tx.id &&
+    other.merchantId === tx.merchantId &&
+    other.categoryId === tx.categoryId &&
+    other.status === "categorizado" &&
+    Math.abs(other.valor - tx.valor) <= 5
+  );
+}
+
 // -- Mapeadores entre linhas do Supabase (snake_case) e o formato usado na UI --
 const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, limit: row.limit_value });
 const mapTransaction = (row) => ({
@@ -371,24 +382,8 @@ function Dashboard({ userId }) {
     if (patErr) { setError(patErr.message); return; }
     setPatterns((prev) => [...prev.filter((p) => p.pattern !== pattern), { pattern, merchantId: merchant.id }]);
 
-    // resolve todos os pendentes que batem com o padrão (outras parcelas, outras variações)
-    const { error: bulkErr1 } = await supabase
-      .from("transactions")
-      .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id })
-      .neq("status", "categorizado")
-      .ilike("estabelecimento", `%${pattern}%`);
-    if (bulkErr1) { setError(bulkErr1.message); return; }
-
-    // resolve também outros pendentes já linkados a esse estabelecimento por um padrão diferente
-    const { error: bulkErr2 } = await supabase
-      .from("transactions")
-      .update({ status: "categorizado", category_id: categoryId })
-      .eq("status", "pendente_categoria")
-      .eq("merchant_id", merchant.id);
-    if (bulkErr2) { setError(bulkErr2.message); return; }
-
     // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura manual)
-    const selfUpdate = { parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal };
+    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal };
     if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
     const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
     if (selfErr) { setError(selfErr.message); return; }
@@ -396,10 +391,6 @@ function Dashboard({ userId }) {
     setTransactions((prev) => prev.map((t) => {
       if (t.id === tx.id) {
         return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, ...(competenciaOverride ? { competenciaOverride } : {}) };
-      }
-      if (t.status === "categorizado") return t;
-      if (t.estabelecimento.toLowerCase().includes(pattern) || t.merchantId === merchant.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id };
       }
       return t;
     }));
@@ -703,7 +694,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -717,7 +708,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allApproved={approved} onApprove={onApprove} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -730,10 +721,11 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, allApproved, onApprove, onRemove }) {
   const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
+  const duplicada = allApproved ? isPossibleDuplicate(tx, allApproved) : false;
 
   if (editing) {
     return (
@@ -751,9 +743,12 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, on
   }
 
   return (
-    <div className="tx-row">
+    <div className={duplicada ? "tx-row tx-row-duplicada" : "tx-row"}>
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-      <span className="tx-desc" title={tx.estabelecimento}>{merch?.name || tx.estabelecimento}</span>
+      <span className="tx-desc" title={tx.estabelecimento}>
+        {duplicada && <AlertTriangle size={12} color="var(--warn)" style={{ marginRight: 4, verticalAlign: "text-bottom" }} />}
+        {merch?.name || tx.estabelecimento}
+      </span>
       <span className="tx-desc">{cat?.name || "—"}</span>
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
         {tx.projetada ? "projetada" : competencia(tx, fechamentosFatura)}
@@ -865,9 +860,9 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
         <div className="approval-field approval-field-parcela">
           <label>Parcela</label>
           <span className="tx-parcela-edit">
-            <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onFocus={(e) => e.target.select()} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />
             <span>/</span>
-            <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onChange={(e) => setParcelaTotal(parseInt(e.target.value) || 1)} />
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onFocus={(e) => e.target.select()} onChange={(e) => setParcelaTotal(parseInt(e.target.value) || 1)} />
           </span>
         </div>
         <div className="approval-field">
@@ -1059,13 +1054,14 @@ function Root() {
       .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .tx-row-duplicada { background: rgba(193,97,61,0.08); border-radius: 6px; }
       .tx-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--text); font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box; }
       .tx-input-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
       .tx-raw-hint { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 2px; }
       .tx-valor-input { text-align: right; font-family: 'IBM Plex Mono', monospace; }
       .tx-parcela { color: var(--muted); font-family: 'IBM Plex Mono', monospace; text-align: center; }
       .tx-parcela-edit { display: flex; align-items: center; justify-content: center; gap: 2px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); font-size: 11px; }
-      .tx-parcela-input { width: 26px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 2px; color: var(--text); font-size: 11px; font-family: inherit; text-align: center; }
+      .tx-parcela-input { width: 34px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 3px 2px; color: var(--text); font-size: 12px; font-family: inherit; text-align: center; }
       .search-input { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; color: var(--text); font-size: 13px; font-family: inherit; margin-right: 10px; }
       .tx-valor { font-family: 'IBM Plex Mono', monospace; text-align: right; }
       .tx-valor-mes { font-weight: 600; }
