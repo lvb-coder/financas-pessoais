@@ -99,6 +99,19 @@ function titleCase(str) {
     .join(" ");
 }
 
+// Pix pago no crédito costuma chegar como só o nome da pessoa, sem marcador nenhum de loja/processadora
+function looksLikePersonName(text) {
+  const t = stripParcela(text).trim();
+  if (!t) return false;
+  if (/\d/.test(t)) return false;
+  if (/[*.]/.test(t)) return false;
+  const words = t.split(/\s+/);
+  if (words.length < 2) return false;
+  const comercial = /\b(ltda|me|eireli|s\.?a\.?|com|pagamentos?|comercio|loja|shop|store|instituicao)\b/i;
+  if (comercial.test(t)) return false;
+  return true;
+}
+
 function matchesSearch(tx, categories, merchants, query) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -158,21 +171,45 @@ function Dashboard({ userId }) {
   const [view, setView] = useState("transacoes");
   const [search, setSearch] = useState("");
 
+  const [syncController, setSyncController] = useState(null);
+
   const syncBank = async () => {
     setSyncing(true);
     setSyncMsg("");
     setError("");
+    const controller = new AbortController();
+    setSyncController(controller);
     try {
-      const { data, error: fnError } = await supabase.functions.invoke("pluggy-sync");
-      if (fnError) throw fnError;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/pluggy-sync`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao sincronizar.");
       setSyncMsg(`${data.novasDespesas} gasto(s) novo(s) esperando aprovação, ${data.novasRendas} recebimento(s) novo(s).`);
       const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
       setIncomes(inc || []);
     } catch (e) {
-      setError(e.message || "Não consegui sincronizar agora.");
+      if (e.name === "AbortError") {
+        setSyncMsg("Sincronização cancelada. O que já tinha sido trazido até agora continua salvo — nada foi perdido.");
+      } else {
+        setError(e.message || "Não consegui sincronizar agora.");
+      }
     } finally {
       setSyncing(false);
+      setSyncController(null);
     }
+  };
+
+  const cancelSync = () => {
+    syncController?.abort();
   };
 
   const connectBank = async () => {
@@ -463,6 +500,11 @@ function Dashboard({ userId }) {
           <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
             <RefreshCw size={16} className={syncing ? "spin" : ""} /> {syncing ? "Sincronizando…" : "Sincronizar"}
           </button>
+          {syncing && (
+            <button className="icon-btn connect-btn" onClick={cancelSync} aria-label="Cancelar sincronização" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>
+              <X size={16} /> Cancelar
+            </button>
+          )}
           <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
             <Landmark size={16} /> {connecting ? "Conectando…" : "Conectar banco"}
           </button>
@@ -706,7 +748,8 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
       setMerchantName(guess.name);
       if (guess.categoryId) setCategoryId(guess.categoryId);
     } else {
-      setMerchantName(stripParcela(tx.estabelecimento));
+      const raw = stripParcela(tx.estabelecimento);
+      setMerchantName(looksLikePersonName(tx.estabelecimento) ? titleCase(`Pix no Crédito - ${raw}`) : raw);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -720,7 +763,10 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   return (
     <div className="tx-row tx-row-pending">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-      <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
+      <span className="tx-input-wrap">
+        <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
+        <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
+      </span>
       <select className="ledger-cat-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
         {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
@@ -905,6 +951,8 @@ function Root() {
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-input { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px; color: var(--text); font-size: 12px; font-family: inherit; width: 100%; box-sizing: border-box; }
+      .tx-input-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .tx-raw-hint { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 2px; }
       .tx-valor-input { text-align: right; font-family: 'IBM Plex Mono', monospace; }
       .tx-parcela { color: var(--muted); font-family: 'IBM Plex Mono', monospace; text-align: center; }
       .tx-parcela-edit { display: flex; align-items: center; justify-content: center; gap: 2px; font-family: 'IBM Plex Mono', monospace; color: var(--muted); font-size: 11px; }
