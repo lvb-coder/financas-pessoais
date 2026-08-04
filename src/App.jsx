@@ -33,7 +33,8 @@ const DEFAULT_CATEGORIES = [
   { id: "outros", name: "Outros", group: "extras", limit_value: 100 },
 ];
 
-const FONTES = ["Débito", "Nubank", "Bradesco"];
+const TIPOS = ["Débito", "Crédito"];
+const BANCOS = ["Nubank", "Bradesco", "Itaú"];
 
 const currency = (v) =>
   (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -42,10 +43,10 @@ const monthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 const monthLabel = (d) =>
   d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }).replace(/^\w/, (c) => c.toUpperCase());
 
-function competencia(dateStr, fonte, fechamentos) {
+function competencia(dateStr, tipo, banco, fechamentos) {
   const [y, m, d] = dateStr.split("-").map(Number);
-  if (fonte === "Débito") return `${y}-${String(m).padStart(2, "0")}`;
-  const closing = fechamentos[fonte] || 1;
+  if (tipo === "Débito") return `${y}-${String(m).padStart(2, "0")}`;
+  const closing = fechamentos[banco] || 1;
   if (d > closing) {
     const next = new Date(y, m, 1);
     return monthKey(next);
@@ -62,7 +63,7 @@ function matchPattern(patterns, estabelecimento) {
 const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, limit: row.limit_value });
 const mapTransaction = (row) => ({
   id: row.id, data: row.data, estabelecimento: row.estabelecimento, valor: Number(row.valor),
-  fonte: row.fonte, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
+  tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -200,7 +201,7 @@ function Dashboard({ userId }) {
 
   const currentMonth = monthKey(cursor);
   const monthTx = useMemo(
-    () => transactions.filter((t) => competencia(t.data, t.fonte, fechamentos) === currentMonth),
+    () => transactions.filter((t) => competencia(t.data, t.tipo, t.banco, fechamentos) === currentMonth),
     [transactions, currentMonth, fechamentos]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
@@ -253,7 +254,7 @@ function Dashboard({ userId }) {
   );
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
-  const addRawTransaction = async ({ data, estabelecimento, valor, fonte }) => {
+  const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco }) => {
     const match = matchPattern(patterns, estabelecimento);
     let status = "pendente_estabelecimento", categoryId = null, merchantId = null;
     if (match) {
@@ -262,7 +263,7 @@ function Dashboard({ userId }) {
       if (merch?.categoryId) { status = "categorizado"; categoryId = merch.categoryId; }
       else status = "pendente_categoria";
     }
-    const row = { data, estabelecimento, valor: parseFloat(valor), fonte, user_id: userId, status, category_id: categoryId, merchant_id: merchantId };
+    const row = { data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId, status, category_id: categoryId, merchant_id: merchantId };
     const { data: inserted, error } = await supabase.from("transactions").insert(row).select().single();
     if (error) { setError(error.message); return; }
     setTransactions((prev) => [mapTransaction(inserted), ...prev]);
@@ -494,6 +495,7 @@ function Dashboard({ userId }) {
                 <div key={t.id} className="ledger-row">
                   <span className="ledger-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
                   <span className="ledger-desc">{merch?.name || t.estabelecimento}</span>
+                  <span className="ledger-tipo-banco">{t.tipo} · {t.banco}</span>
                   <select className="ledger-cat-select" value={t.categoryId || ""} onChange={(e) => updateTransactionCategory(t.id, e.target.value)}>
                     {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
@@ -506,7 +508,7 @@ function Dashboard({ userId }) {
         )}
       </section>
 
-      {showAdd && <AddRawModal fontes={FONTES} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
+      {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
         <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
       )}
@@ -568,17 +570,18 @@ function CategoriaPendenteRow({ group, merchants, categories, onResolve }) {
   );
 }
 
-function AddRawModal({ fontes, onClose, onSave }) {
+function AddRawModal({ tipos, bancos, onClose, onSave }) {
   const today = new Date().toISOString().slice(0, 10);
   const [data, setData] = useState(today);
   const [estabelecimento, setEstabelecimento] = useState("");
   const [valor, setValor] = useState("");
-  const [fonte, setFonte] = useState(fontes[0]);
+  const [tipo, setTipo] = useState(tipos[0]);
+  const [banco, setBanco] = useState(bancos[0]);
 
   const submit = (e) => {
     e.preventDefault();
     if (!estabelecimento || !valor) return;
-    onSave({ data, estabelecimento, valor: valor.replace(",", "."), fonte });
+    onSave({ data, estabelecimento, valor: valor.replace(",", "."), tipo, banco });
   };
 
   return (
@@ -589,9 +592,14 @@ function AddRawModal({ fontes, onClose, onSave }) {
         <label>Data<input type="date" value={data} onChange={(e) => setData(e.target.value)} required /></label>
         <label>Estabelecimento<input type="text" placeholder="Ex: IFOOD, SMARTFIT, COELBA" value={estabelecimento} onChange={(e) => setEstabelecimento(e.target.value)} required /></label>
         <label>Valor (R$)<input type="text" inputMode="decimal" placeholder="0,00" value={valor} onChange={(e) => setValor(e.target.value)} required /></label>
-        <label>Fonte
-          <select value={fonte} onChange={(e) => setFonte(e.target.value)}>
-            {fontes.map((f) => <option key={f} value={f}>{f}</option>)}
+        <label>Tipo
+          <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
+            {tipos.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+        <label>Banco
+          <select value={banco} onChange={(e) => setBanco(e.target.value)}>
+            {bancos.map((b) => <option key={b} value={b}>{b}</option>)}
           </select>
         </label>
         <button type="submit" className="submit-btn">Adicionar</button>
@@ -699,7 +707,8 @@ function Root() {
       .cat-bar-fill { height: 100%; border-radius: 3px; transition: width .3s; }
       .empty { color: var(--muted); font-size: 14px; padding: 20px 0; text-align: center; }
       .ledger-list { display: grid; }
-      .ledger-row { display: grid; grid-template-columns: 40px 1fr auto auto 24px; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+      .ledger-row { display: grid; grid-template-columns: 40px 1fr auto auto auto 24px; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+      .ledger-tipo-banco { color: var(--muted); font-size: 11px; white-space: nowrap; }
       .ledger-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .ledger-cat { color: var(--muted); font-size: 12px; }
       .ledger-cat-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--muted); font-size: 11px; font-family: inherit; max-width: 120px; }
@@ -718,8 +727,8 @@ function Root() {
       .rules-list { display: grid; gap: 6px; max-height: 160px; overflow-y: auto; }
       .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
       @media (max-width: 420px) {
-        .ledger-row { grid-template-columns: 34px 1fr auto 20px; }
-        .ledger-cat { display: none; }
+        .ledger-row { grid-template-columns: 34px 1fr auto auto 20px; }
+        .ledger-tipo-banco { display: none; }
       }
     `}</style>
   );
