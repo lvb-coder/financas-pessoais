@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Wallet, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark } from "lucide-react";
+import { Plus, Wallet, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, TrendingUp } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -91,6 +91,26 @@ function Dashboard({ userId }) {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [incomes, setIncomes] = useState([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+
+  const syncBank = async () => {
+    setSyncing(true);
+    setSyncMsg("");
+    setError("");
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke("pluggy-sync");
+      if (fnError) throw fnError;
+      setSyncMsg(`${data.novasDespesas} gasto(s) novo(s), ${data.pendentes} pendente(s), ${data.novasRendas} recebimento(s) novo(s).`);
+      const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
+      setIncomes(inc || []);
+    } catch (e) {
+      setError(e.message || "Não consegui sincronizar agora.");
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const connectBank = async () => {
     setConnecting(true);
@@ -145,6 +165,9 @@ function Dashboard({ userId }) {
 
         const { data: settingsRow } = await supabase.from("settings").select("*").eq("key", "fechamentos").maybeSingle();
         if (settingsRow) setFechamentos(settingsRow.value);
+
+        const { data: inc } = await supabase.from("incomes").select("*").order("data", { ascending: false });
+        setIncomes(inc || []);
       } catch (e) {
         setError(e.message || "Erro ao carregar seus dados.");
       } finally {
@@ -191,6 +214,12 @@ function Dashboard({ userId }) {
     });
     return out;
   }, [categories, spentByCategory]);
+
+  const monthIncomes = useMemo(
+    () => incomes.filter((i) => i.data.slice(0, 7) === currentMonth),
+    [incomes, currentMonth]
+  );
+  const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
   const addRawTransaction = async ({ data, estabelecimento, valor, fonte }) => {
     const rule = findRule(rules, estabelecimento);
@@ -259,6 +288,9 @@ function Dashboard({ userId }) {
           <h1>Minhas finanças</h1>
         </div>
         <div className="header-actions">
+          <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
+            <RefreshCw size={16} className={syncing ? "spin" : ""} /> {syncing ? "Sincronizando…" : "Sincronizar"}
+          </button>
           <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
             <Landmark size={16} /> {connecting ? "Conectando…" : "Conectar banco"}
           </button>
@@ -279,6 +311,25 @@ function Dashboard({ userId }) {
           <Inbox size={16} />
           <span>{pendentes.length} gasto{pendentes.length > 1 ? "s" : ""} pendente{pendentes.length > 1 ? "s" : ""} de categorização, somando {currency(pendentes.reduce((s, t) => s + Number(t.valor), 0))}</span>
         </div>
+      )}
+
+      {syncMsg && <div className="banner banner-pending"><RefreshCw size={16} /> {syncMsg}</div>}
+
+      {incomes.length > 0 && (
+        <section className="income-card">
+          <div className="group-head">
+            <TrendingUp size={16} color="var(--ok)" />
+            <h2>Renda do mês</h2>
+            <span className="group-total" style={{ color: "var(--ok)" }}>{currency(totalIncome)}</span>
+          </div>
+          {monthIncomes.map((i) => (
+            <div key={i.id} className="ledger-row" style={{ gridTemplateColumns: "40px 1fr auto" }}>
+              <span className="ledger-date">{i.data.slice(8, 10)}/{i.data.slice(5, 7)}</span>
+              <span className="ledger-desc">{i.descricao}</span>
+              <span className="ledger-amount" style={{ color: "var(--ok)" }}>{currency(i.valor)}</span>
+            </div>
+          ))}
+        </section>
       )}
 
       <div className="ledger-head" style={{ marginBottom: 18 }}>
@@ -464,6 +515,9 @@ function Root() {
       .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
       .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
       .connect-btn:disabled { opacity: 0.6; cursor: default; }
+      .spin { animation: spin 1s linear infinite; }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      .income-card { background: var(--surface); border: 1px solid var(--ok); border-radius: 14px; padding: 18px; margin-bottom: 20px; }
       .month-nav { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
       .month-nav button { background: none; border: none; color: var(--text); cursor: pointer; display: flex; padding: 2px; }
       .banner { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
