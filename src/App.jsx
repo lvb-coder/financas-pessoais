@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -91,12 +91,17 @@ function stripParcela(estabelecimento) {
 }
 
 function titleCase(str) {
+  const conectores = new Set(["de", "da", "do", "das", "dos", "e", "no", "na", "nos", "nas"]);
   return (str || "")
     .toLowerCase()
     .split(" ")
     .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .map((w, i) => (i > 0 && conectores.has(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)))
     .join(" ");
+}
+
+function stripPixPrefix(name) {
+  return (name || "").replace(/^pix no cr[ée]dito\s*-\s*/i, "").trim();
 }
 
 // Pix pago no crédito costuma chegar como só o nome da pessoa, sem marcador nenhum de loja/processadora
@@ -340,12 +345,14 @@ function Dashboard({ userId }) {
     setShowAdd(false);
   };
 
-  // Aprova uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez
-  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor }) => {
+  // Aprova (ou edita) uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez.
+  // Funciona tanto pra aprovar uma pendente quanto pra editar uma já aprovada — sem mudar o status nesse segundo caso.
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data }) => {
     const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
     if (!pattern) return;
+    const dataFinal = data || tx.data;
 
     const { data: merchant, error: merchErr } = await supabase
       .from("merchants")
@@ -377,15 +384,15 @@ function Dashboard({ userId }) {
       .eq("merchant_id", merchant.id);
     if (bulkErr2) { setError(bulkErr2.message); return; }
 
-    // grava nesta transação específica os valores que você editou (parcela, valor, fatura manual)
-    const selfUpdate = { parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor };
+    // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura manual)
+    const selfUpdate = { parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal };
     if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
     const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
     if (selfErr) { setError(selfErr.message); return; }
 
     setTransactions((prev) => prev.map((t) => {
       if (t.id === tx.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, ...(competenciaOverride ? { competenciaOverride } : {}) };
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, ...(competenciaOverride ? { competenciaOverride } : {}) };
       }
       if (t.status === "categorizado") return t;
       if (t.estabelecimento.toLowerCase().includes(pattern) || t.merchantId === merchant.id) {
@@ -406,7 +413,7 @@ function Dashboard({ userId }) {
       }
       if (faltantes.length > 0) {
         const rows = faltantes.map((n) => ({
-          data: addMonths(tx.data, n - parcelaAtual),
+          data: addMonths(dataFinal, n - parcelaAtual),
           estabelecimento: `${name} ${n}/${parcelaTotal}`,
           valor,
           tipo: tx.tipo,
@@ -563,7 +570,6 @@ function Dashboard({ userId }) {
               search={search}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
-              onReject={rejectTransaction}
               onRemove={removeTransaction}
             />
           ))}
@@ -639,7 +645,7 @@ function Dashboard({ userId }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onReject, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRemove }) {
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
@@ -694,7 +700,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -708,7 +714,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
               <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -721,9 +727,26 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   );
 }
 
-function DisplayRow({ tx, categories, merchants, fechamentosFatura, onReject, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onRemove }) {
+  const [editing, setEditing] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
+
+  if (editing) {
+    return (
+      <ApprovalRow
+        tx={tx}
+        categories={categories}
+        merchants={merchants}
+        patterns={patterns}
+        fechamentosFatura={fechamentosFatura}
+        mode="editing"
+        onApprove={(t, payload) => { onApprove(t, payload); setEditing(false); }}
+        onCancel={() => setEditing(false)}
+      />
+    );
+  }
+
   return (
     <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
@@ -735,19 +758,21 @@ function DisplayRow({ tx, categories, merchants, fechamentosFatura, onReject, on
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
       <span className="tx-valor">{currency(tx.valor * tx.parcelaTotal)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
-      <button className="ledger-remove" onClick={() => onReject(tx.id)} aria-label="Recusar" title="Recusar e editar de novo"><RotateCcw size={14} /></button>
+      <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, mode = "pending", onCancel }) {
   const [merchantName, setMerchantName] = useState("");
+  const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
   const [fatura, setFatura] = useState(competencia(tx, fechamentosFatura));
+  const [data, setData] = useState(tx.data);
   const parcelaDetectada = parseParcela(tx.estabelecimento);
-  const [parcelaAtual, setParcelaAtual] = useState(parcelaDetectada.atual);
-  const [parcelaTotal, setParcelaTotal] = useState(parcelaDetectada.total);
+  const [parcelaAtual, setParcelaAtual] = useState(tx.parcelaAtual > 1 ? tx.parcelaAtual : parcelaDetectada.atual);
+  const [parcelaTotal, setParcelaTotal] = useState(tx.parcelaTotal > 1 ? tx.parcelaTotal : parcelaDetectada.total);
   const [valorMes, setValorMes] = useState(String(tx.valor).replace(".", ","));
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
@@ -756,7 +781,9 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
     if (tx.merchantId) {
       const m = merchants.find((mm) => mm.id === tx.merchantId);
       if (m) {
-        setMerchantName(m.name);
+        const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
+        setPixCredito(hasPrefix);
+        setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
         setCategoryId(tx.categoryId || m.categoryId || categories[0]?.id);
         return;
       }
@@ -765,7 +792,9 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
     if (patMatch) {
       const m = merchants.find((mm) => mm.id === patMatch.merchantId);
       if (m) {
-        setMerchantName(m.name);
+        const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
+        setPixCredito(hasPrefix);
+        setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
         if (m.categoryId) setCategoryId(m.categoryId);
         return;
       }
@@ -773,11 +802,15 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
     const alvo = tx.estabelecimento.toLowerCase();
     const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
     if (guess) {
-      setMerchantName(guess.name);
+      const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(guess.name);
+      setPixCredito(hasPrefix);
+      setMerchantName(hasPrefix ? stripPixPrefix(guess.name) : guess.name);
       if (guess.categoryId) setCategoryId(guess.categoryId);
     } else {
       const raw = stripParcela(tx.estabelecimento);
-      setMerchantName(looksLikePersonName(tx.estabelecimento) ? titleCase(`Pix no Crédito - ${raw}`) : raw);
+      const looksPerson = looksLikePersonName(tx.estabelecimento);
+      setPixCredito(looksPerson);
+      setMerchantName(looksPerson ? titleCase(raw) : raw);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -788,14 +821,30 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
     if (match?.categoryId) setCategoryId(match.categoryId);
   };
 
+  const submit = () => {
+    const nomeFinal = pixCredito ? `Pix no Crédito - ${merchantName.trim()}` : merchantName.trim();
+    onApprove(tx, {
+      merchantName: nomeFinal, categoryId,
+      competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
+      parcelaAtual, parcelaTotal, valor: valorMesNum, data,
+    });
+  };
+
   return (
-    <div className="approval-card">
+    <div className={mode === "editing" ? "approval-card approval-card-editing" : "approval-card"}>
       <div className="approval-top">
-        <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
+        <div className="approval-field">
+          <label>Data</label>
+          <input className="tx-input" type="date" value={data} onChange={(e) => setData(e.target.value)} />
+        </div>
         <div className="approval-field approval-field-grow">
           <label>Estabelecimento</label>
           <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
           <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
+          <label className="checkbox" style={{ marginTop: 3 }}>
+            <input type="checkbox" checked={pixCredito} onChange={(e) => setPixCredito(e.target.checked)} />
+            Pix no Crédito
+          </label>
         </div>
         <div className="approval-field">
           <label>Categoria</label>
@@ -828,18 +877,14 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
           <span className="tx-valor-total">{currency(valorMesNum * parcelaTotal)}</span>
         </div>
         <div className="approval-actions">
-          <button
-            className="confirm-btn"
-            disabled={!merchantName.trim()}
-            onClick={() => onApprove(tx, {
-              merchantName, categoryId,
-              competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
-              parcelaAtual, parcelaTotal, valor: valorMesNum,
-            })}
-          >
+          <button className="confirm-btn" disabled={!merchantName.trim()} onClick={submit}>
             <Check size={14} />
           </button>
-          <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+          {mode === "editing" ? (
+            <button className="ledger-remove" onClick={onCancel} aria-label="Cancelar edição" title="Cancelar"><X size={14} /></button>
+          ) : (
+            <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+          )}
         </div>
       </div>
     </div>
@@ -996,6 +1041,7 @@ function Root() {
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
       .pendentes-cards { display: grid; gap: 10px; }
       .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+      .approval-card-editing { background: rgba(95,163,119,0.08); border-color: var(--ok); }
       .approval-top { display: flex; gap: 10px; align-items: flex-start; }
       .approval-bottom { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
