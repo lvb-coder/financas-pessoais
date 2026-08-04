@@ -185,9 +185,12 @@ function Dashboard({ userId }) {
     const controller = new AbortController();
     setSyncController(controller);
     try {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      if (!supabaseUrl) throw new Error("VITE_SUPABASE_URL não está configurada nesse ambiente.");
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/pluggy-sync`, {
+      if (!token) throw new Error("Sessão expirada — sai e entra de novo.");
+      const res = await fetch(`${supabaseUrl}/functions/v1/pluggy-sync`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
