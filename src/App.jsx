@@ -333,6 +333,12 @@ function Dashboard({ userId }) {
     setTransactions((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const removeTransactionGroup = async (ids) => {
+    const { error } = await supabase.from("transactions").delete().in("id", ids);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.filter((t) => !ids.includes(t.id)));
+  };
+
   const updateLimit = async (id, value) => {
     const limit = parseFloat(value) || 0;
     setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, limit } : c)));
@@ -428,7 +434,7 @@ function Dashboard({ userId }) {
           </datalist>
           <div className="pendentes-list">
             {pendentesEstabelecimento.map((g) => (
-              <EstabelecimentoPendenteRow key={g.estabelecimento} group={g} onResolve={resolveEstabelecimento} onRemove={removeTransaction} />
+              <EstabelecimentoPendenteRow key={g.estabelecimento} group={g} onResolve={resolveEstabelecimento} onRemoveGroup={removeTransactionGroup} />
             ))}
           </div>
         </section>
@@ -508,8 +514,8 @@ function Dashboard({ userId }) {
   );
 }
 
-function EstabelecimentoPendenteRow({ group, onResolve, onRemove }) {
-  const [merchantName, setMerchantName] = useState("");
+function EstabelecimentoPendenteRow({ group, onResolve, onRemoveGroup }) {
+  const [merchantName, setMerchantName] = useState(group.estabelecimento);
   const [pattern, setPattern] = useState(group.estabelecimento);
 
   return (
@@ -532,11 +538,9 @@ function EstabelecimentoPendenteRow({ group, onResolve, onRemove }) {
           onClick={() => onResolve({ merchantName, pattern })}>
           <Check size={14} /> Identificar
         </button>
-        {group.ids.map((id) => (
-          <button key={id} className="ledger-remove" onClick={() => onRemove(id)} aria-label="Remover" title="Ignorar este lançamento">
-            <X size={14} />
-          </button>
-        ))}
+        <button className="ignore-btn" onClick={() => onRemoveGroup(group.ids)}>
+          Ignorar {group.count > 1 ? `todos (${group.count})` : ""}
+        </button>
       </div>
     </div>
   );
@@ -676,6 +680,8 @@ function Root() {
       .pendente-actions select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text); font-size: 13px; }
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
+      .ignore-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+      .ignore-btn:hover { border-color: var(--warn); color: var(--warn); }
       .groups { display: grid; gap: 14px; margin-bottom: 24px; }
       .group-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
       .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
