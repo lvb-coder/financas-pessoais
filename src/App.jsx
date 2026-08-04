@@ -43,17 +43,36 @@ const monthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 const monthLabel = (d) =>
   d.toLocaleDateString("pt-BR", { month: "long", year: "numeric" }).replace(/^\w/, (c) => c.toUpperCase());
 
-function competencia(dateStr, tipo, banco, fechamentosFatura) {
-  if (tipo === "Débito") return dateStr.slice(0, 7);
+function competencia(tx, fechamentosFatura) {
+  if (tx.competenciaOverride) return tx.competenciaOverride;
+  if (tx.tipo === "Débito") return tx.data.slice(0, 7);
   const closings = fechamentosFatura
-    .filter((f) => f.banco === banco)
+    .filter((f) => f.banco === tx.banco)
     .slice()
     .sort((a, b) => a.fechamento.localeCompare(b.fechamento));
-  const txDate = new Date(dateStr + "T12:00:00");
+  const txDate = new Date(tx.data + "T12:00:00");
   for (const c of closings) {
     if (txDate <= new Date(c.fechamento)) return c.competencia;
   }
-  return dateStr.slice(0, 7); // nenhum fechamento futuro cadastrado ainda — usa o mês da própria compra
+  return tx.data.slice(0, 7); // nenhum fechamento futuro cadastrado ainda — usa o mês da própria compra
+}
+
+function addMonths(dateStr, n) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(y, m - 1 + n, 1);
+  const lastDay = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+  dt.setDate(Math.min(d, lastDay));
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
+function nearbyMonths() {
+  const now = new Date();
+  const list = [];
+  for (let i = -1; i <= 3; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    list.push(monthKey(d));
+  }
+  return list;
 }
 
 function matchPattern(patterns, estabelecimento) {
@@ -76,6 +95,7 @@ const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, li
 const mapTransaction = (row) => ({
   id: row.id, data: row.data, estabelecimento: row.estabelecimento, valor: Number(row.valor),
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
+  competenciaOverride: row.competencia_override, projetada: row.projetada,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -216,7 +236,7 @@ function Dashboard({ userId }) {
 
   const currentMonth = monthKey(cursor);
   const monthTx = useMemo(
-    () => transactions.filter((t) => competencia(t.data, t.tipo, t.banco, fechamentosFatura) === currentMonth),
+    () => transactions.filter((t) => competencia(t, fechamentosFatura) === currentMonth),
     [transactions, currentMonth, fechamentosFatura]
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
@@ -252,7 +272,7 @@ function Dashboard({ userId }) {
   };
 
   // Aprova uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez
-  const resolveApproval = async (tx, { merchantName, categoryId }) => {
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride }) => {
     const name = merchantName.trim();
     if (!name || !categoryId) return;
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
@@ -288,13 +308,50 @@ function Dashboard({ userId }) {
       .eq("merchant_id", merchant.id);
     if (bulkErr2) { setError(bulkErr2.message); return; }
 
+    // fatura manual (ex: Pix no crédito que não segue o fechamento normal) — só nesta transação
+    if (competenciaOverride) {
+      const { error: ovrErr } = await supabase.from("transactions").update({ competencia_override: competenciaOverride }).eq("id", tx.id);
+      if (ovrErr) { setError(ovrErr.message); return; }
+    }
+
     setTransactions((prev) => prev.map((t) => {
       if (t.status === "categorizado") return t;
       if (t.estabelecimento.toLowerCase().includes(pattern) || t.merchantId === merchant.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id };
+        const extra = t.id === tx.id && competenciaOverride ? { competenciaOverride } : {};
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, ...extra };
       }
       return t;
     }));
+
+    // gera as parcelas futuras que ainda não existem, se for uma compra parcelada
+    const parcela = parseParcela(tx.estabelecimento);
+    if (parcela.total > 1) {
+      const faltantes = [];
+      for (let n = parcela.atual + 1; n <= parcela.total; n++) {
+        const jaExiste = transactions.some((t) =>
+          t.merchantId === merchant.id && t.banco === tx.banco && t.tipo === tx.tipo &&
+          parseParcela(t.estabelecimento).atual === n && parseParcela(t.estabelecimento).total === parcela.total
+        );
+        if (!jaExiste) faltantes.push(n);
+      }
+      if (faltantes.length > 0) {
+        const rows = faltantes.map((n) => ({
+          data: addMonths(tx.data, n - parcela.atual),
+          estabelecimento: `${pattern} ${n}/${parcela.total}`,
+          valor: tx.valor,
+          tipo: tx.tipo,
+          banco: tx.banco,
+          user_id: userId,
+          status: "categorizado",
+          category_id: categoryId,
+          merchant_id: merchant.id,
+          projetada: true,
+        }));
+        const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
+        if (projErr) { setError(projErr.message); return; }
+        setTransactions((prev) => [...prev, ...(inseridas || []).map(mapTransaction)]);
+      }
+    }
   };
 
   // Devolve um lançamento já aprovado pra fila de aprovação, editável de novo
@@ -406,6 +463,7 @@ function Dashboard({ userId }) {
               categories={categories}
               merchants={merchants}
               patterns={patterns}
+              fechamentosFatura={fechamentosFatura}
               onApprove={resolveApproval}
               onIgnore={removeTransaction}
               onReject={rejectTransaction}
@@ -456,7 +514,7 @@ function Dashboard({ userId }) {
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, onApprove, onIgnore, onReject, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, onReject, onRemove }) {
   const list = transactions.filter((t) => t.banco === banco && t.tipo === tipo).sort((a, b) => b.data.localeCompare(a.data));
   if (list.length === 0) return null;
 
@@ -468,6 +526,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
+  const qtdNovasParceladas = novas.filter((t) => parseParcela(t.estabelecimento).total > 1).length;
 
   return (
     <section className="bank-group">
@@ -481,17 +540,18 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
 
       <div className="fatura-summary">
         <span>Total da fatura <strong>{currency(totalFatura)}</strong></span>
-        <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong></span>
-        <span>Novas transações <strong>{currency(totalNovas)}</strong></span>
+        <span>Qtd. transações <strong>{approved.length}</strong></span>
+        <span>Novas transações <strong>{currency(totalNovas)}</strong> ({novas.length}, {qtdNovasParceladas} parcelada{qtdNovasParceladas !== 1 ? "s" : ""})</span>
+        <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong> ({programadas.length})</span>
       </div>
 
       {pending.length > 0 && (
         <div className="tx-list">
           <div className="tx-row tx-row-head">
-            <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+            <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
           </div>
           {pending.map((t) => (
-            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} onApprove={onApprove} onIgnore={onIgnore} />
+            <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onIgnore={onIgnore} />
           ))}
         </div>
       )}
@@ -501,10 +561,10 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
           <p className="tx-subhead">Novas transações</p>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {novas.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onReject={onReject} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -515,10 +575,10 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
           <p className="tx-subhead">Parcelas programadas</p>
           <div className="tx-list">
             <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
             </div>
             {programadas.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} onReject={onReject} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -527,7 +587,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   );
 }
 
-function DisplayRow({ tx, categories, merchants, onReject, onRemove }) {
+function DisplayRow({ tx, categories, merchants, fechamentosFatura, onReject, onRemove }) {
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
   const parcela = parseParcela(tx.estabelecimento);
@@ -536,6 +596,9 @@ function DisplayRow({ tx, categories, merchants, onReject, onRemove }) {
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
       <span className="tx-desc" title={tx.estabelecimento}>{merch?.name || tx.estabelecimento}</span>
       <span className="tx-desc">{cat?.name || "—"}</span>
+      <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
+        {tx.projetada ? "projetada" : competencia(tx, fechamentosFatura)}
+      </span>
       <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
       <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
@@ -545,10 +608,12 @@ function DisplayRow({ tx, categories, merchants, onReject, onRemove }) {
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, onApprove, onIgnore }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore }) {
   const [merchantName, setMerchantName] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
+  const [fatura, setFatura] = useState(competencia(tx, fechamentosFatura));
   const parcela = parseParcela(tx.estabelecimento);
+  const faturaAutomatica = competencia(tx, fechamentosFatura);
 
   useEffect(() => {
     if (tx.merchantId) {
@@ -592,10 +657,19 @@ function ApprovalRow({ tx, categories, merchants, patterns, onApprove, onIgnore 
       <select className="ledger-cat-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
         {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
+      <select className="ledger-cat-select" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada">
+        {nearbyMonths().map((mk) => <option key={mk} value={mk}>{mk}</option>)}
+      </select>
       <span className="tx-parcela">{parcela.atual}/{parcela.total}</span>
       <span className="tx-valor">{currency(tx.valor * parcela.total)}</span>
       <span className="tx-valor tx-valor-mes">{currency(tx.valor)}</span>
-      <button className="confirm-btn" disabled={!merchantName.trim()} onClick={() => onApprove(tx, { merchantName, categoryId })}><Check size={14} /></button>
+      <button
+        className="confirm-btn"
+        disabled={!merchantName.trim()}
+        onClick={() => onApprove(tx, { merchantName, categoryId, competenciaOverride: fatura !== faturaAutomatica ? fatura : null })}
+      >
+        <Check size={14} />
+      </button>
       <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
@@ -656,7 +730,7 @@ function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>Configurações</h3><button onClick={onClose}><X size={18} /></button></div>
 
-        <p className="modal-hint">Cada fatura pode ter uma data/hora de fechamento diferente (por causa de feriados e fins de semana). Cadastre o fechamento de cada mês aqui.</p>
+        <p className="modal-hint">Cada fatura pode ter uma data de fechamento diferente (por causa de feriados e fins de semana). Cadastre o fechamento de cada mês aqui.</p>
         <form onSubmit={submitFechamento} style={{ display: "grid", gap: 10 }}>
           <label>Banco
             <select value={banco} onChange={(e) => setBanco(e.target.value)}>
@@ -667,8 +741,8 @@ function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento
           <label>Mês da fatura
             <input type="month" value={competencia} onChange={(e) => setCompetencia(e.target.value)} />
           </label>
-          <label>Data e hora do fechamento
-            <input type="datetime-local" value={fechamento} onChange={(e) => setFechamento(e.target.value)} required />
+          <label>Data do fechamento
+            <input type="date" value={fechamento} onChange={(e) => setFechamento(e.target.value)} required />
           </label>
           <button type="submit" className="submit-btn">Salvar fechamento</button>
         </form>
@@ -679,7 +753,7 @@ function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento
           {[...fechamentosFatura].sort((a, b) => b.competencia.localeCompare(a.competencia)).map((f) => (
             <div key={f.id} className="rule-row">
               <span>{f.banco} · {f.competencia}</span>
-              <span className="of">{new Date(f.fechamento).toLocaleString("pt-BR")}</span>
+              <span className="of">{new Date(f.fechamento).toLocaleDateString("pt-BR", { timeZone: "UTC" })}</span>
               <button className="ledger-remove" onClick={() => onDeleteFechamento(f.id)} aria-label="Apagar fechamento"><X size={13} /></button>
             </div>
           ))}
@@ -749,8 +823,8 @@ function Root() {
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
-      .tx-list { min-width: 680px; }
-      .tx-row { display: grid; grid-template-columns: 52px 1.6fr 1fr 46px 90px 90px 24px 24px; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+      .tx-list { min-width: 720px; }
+      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 46px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
       .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
       .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
