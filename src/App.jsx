@@ -746,9 +746,34 @@ function Dashboard({ userId }) {
   );
 }
 
+function SortableHead({ sort, setSort }) {
+  const cols = [
+    { key: "data", label: "Data" },
+    { key: "estabelecimento", label: "Estabelecimento" },
+    { key: "categoria", label: "Categoria" },
+    { key: "fatura", label: "Fatura" },
+    { key: "parcela", label: "Parc." },
+    { key: "total", label: "Total" },
+    { key: "mes", label: "Mês" },
+  ];
+  const click = (key) => setSort((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: 1 }));
+  return (
+    <div className="tx-row tx-row-head">
+      {cols.map((c) => (
+        <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
+          {c.label}{sort.key === c.key ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+        </button>
+      ))}
+      <span /><span />
+    </div>
+  );
+}
+
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, onApprove, onIgnore, onRevert, onRemove }) {
   const [filtrosNovas, setFiltrosNovas] = useState({ estab: "", categoria: "", fatura: "" });
   const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estab: "", categoria: "", fatura: "" });
+  const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
+  const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
@@ -776,12 +801,30 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
     return true;
   });
 
+  const sortValue = (t, key) => {
+    switch (key) {
+      case "data": return t.data;
+      case "estabelecimento": return (merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento).toLowerCase();
+      case "categoria": return (categories.find((c) => c.id === t.categoryId)?.name || "").toLowerCase();
+      case "fatura": return competencia(t, fechamentosFatura);
+      case "parcela": return t.parcelaAtual;
+      case "total": return t.valor * t.parcelaTotal;
+      case "mes": return t.valor;
+      default: return t.data;
+    }
+  };
+  const aplicarOrdenacao = (list, sort) =>
+    [...list].sort((a, b) => {
+      const va = sortValue(a, sort.key), vb = sortValue(b, sort.key);
+      if (va < vb) return -1 * sort.dir;
+      if (va > vb) return 1 * sort.dir;
+      return 0;
+    });
+
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas)
-    .sort((a, b) => b.data.localeCompare(a.data));
-  const programadasF = aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas)
-    .sort((a, b) => b.data.localeCompare(a.data));
+  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas), sortNovas);
+  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas), sortProgramadas);
   const faturasNovas = [...new Set(novas.map((t) => competencia(t, fechamentosFatura)))].sort();
   const faturasProgramadas = [...new Set(programadas.map((t) => competencia(t, fechamentosFatura)))].sort();
 
@@ -830,9 +873,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
             </div>
           </div>
           <div className="tx-list">
-            <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
-            </div>
+            <SortableHead sort={sortNovas} setSort={setSortNovas} />
             {novasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -857,9 +898,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
             </div>
           </div>
           <div className="tx-list">
-            <div className="tx-row tx-row-head">
-              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
-            </div>
+            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} />
             {programadasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -988,12 +1027,21 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     <div className={mode === "editing" ? "approval-card approval-card-editing" : "approval-card"}>
       {possiveisDuplicatas.length > 0 && (
         <div className="duplicate-warning">
-          <AlertTriangle size={13} color="var(--warn)" />
-          <span>
-            Parecido com {possiveisDuplicatas.length > 1 ? `${possiveisDuplicatas.length} lançamentos já aprovados` : "um lançamento já aprovado"} nesta mesma fatura
-            {possiveisDuplicatas[0] && ` (${possiveisDuplicatas[0].data.slice(8, 10)}/${possiveisDuplicatas[0].data.slice(5, 7)} · ${currency(possiveisDuplicatas[0].valor)})`}.
-          </span>
-          <button className="ignore-link" onClick={() => onIgnore(tx.id)}>Excluir esta</button>
+          <div className="duplicate-warning-head">
+            <AlertTriangle size={13} color="var(--warn)" />
+            <span>Parecido com {possiveisDuplicatas.length} lançamento{possiveisDuplicatas.length > 1 ? "s" : ""} já aprovado{possiveisDuplicatas.length > 1 ? "s" : ""} nesta mesma fatura:</span>
+            <button className="ignore-link" onClick={() => onIgnore(tx.id)}>Excluir esta</button>
+          </div>
+          <div className="duplicate-warning-list">
+            {possiveisDuplicatas.map((d) => (
+              <div key={d.id} className="duplicate-warning-item">
+                <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
+                <span>{d.banco} · {d.tipo}</span>
+                <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
+                <span className="tx-valor-total">{currency(d.valor)}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       <div className="approval-top">
@@ -1217,7 +1265,10 @@ function Root() {
       .pendentes-cards { display: grid; gap: 10px; }
       .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
       .approval-card-editing { background: rgba(95,163,119,0.08); border-color: var(--ok); }
-      .duplicate-warning { display: flex; align-items: center; gap: 8px; background: rgba(193,97,61,0.15); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--warn); }
+      .duplicate-warning { background: rgba(193,97,61,0.15); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--warn); }
+      .duplicate-warning-head { display: flex; align-items: center; gap: 8px; }
+      .duplicate-warning-list { display: grid; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--warn); }
+      .duplicate-warning-item { display: grid; grid-template-columns: 44px 1fr 70px 80px; gap: 8px; font-size: 11px; color: var(--text); }
       .approval-top { display: flex; gap: 10px; align-items: flex-start; }
       .approval-bottom { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -1230,6 +1281,8 @@ function Root() {
       .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 46px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
       .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
+      .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
+      .tx-head-btn:hover { color: var(--text); }
       .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
