@@ -145,17 +145,22 @@ function matchesSearch(tx, categories, merchants, query) {
   return false;
 }
 
-// Agrupa transações aprovadas (e ainda não revisadas) que parecem duplicadas:
-// mesmo estabelecimento + categoria, valor mensal a até R$5 de diferença.
-function findDuplicateGroups(transactions) {
-  const candidates = transactions.filter((t) => t.status === "categorizado" && !t.duplicateReviewed && t.merchantId);
+// Duas transações "parecidas": mesmo estabelecimento + categoria, valor a até R$5 de diferença
+function isSimilar(a, b) {
+  return a.merchantId && a.merchantId === b.merchantId && a.categoryId === b.categoryId && Math.abs(a.valor - b.valor) <= 5;
+}
+
+// Agrupa transações aprovadas (e ainda não revisadas) que parecem duplicadas,
+// só entre transações da MESMA fatura (mês).
+function findDuplicateGroups(transactions, fechamentosFatura) {
+  const candidates = transactions
+    .filter((t) => t.status === "categorizado" && !t.duplicateReviewed && t.merchantId)
+    .map((t) => ({ ...t, _fatura: competencia(t, fechamentosFatura) }));
   const used = new Set();
   const groups = [];
   for (const t of candidates) {
     if (used.has(t.id)) continue;
-    const group = candidates.filter((o) =>
-      o.merchantId === t.merchantId && o.categoryId === t.categoryId && Math.abs(o.valor - t.valor) <= 5
-    );
+    const group = candidates.filter((o) => o._fatura === t._fatura && isSimilar(o, t));
     if (group.length > 1) {
       group.forEach((g) => used.add(g.id));
       groups.push(group.sort((a, b) => b.data.localeCompare(a.data)));
@@ -346,7 +351,7 @@ function Dashboard({ userId }) {
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
   const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
-  const duplicateGroups = useMemo(() => findDuplicateGroups(transactions), [transactions]);
+  const duplicateGroups = useMemo(() => findDuplicateGroups(transactions, fechamentosFatura), [transactions, fechamentosFatura]);
   const globalSearchResults = useMemo(() => {
     if (!search.trim()) return [];
     return transactions
@@ -781,7 +786,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
           <p className="tx-subhead">Pendentes de aprovação</p>
           <div className="pendentes-cards">
             {pendingF.map((t) => (
-              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onIgnore={onIgnore} />
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={approved} onApprove={onApprove} onIgnore={onIgnore} />
             ))}
           </div>
         </>
@@ -862,7 +867,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, on
   );
 }
 
-function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
+function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, allTransactions = [], onApprove, onIgnore, mode = "pending", onCancel, onRevert }) {
   const [merchantName, setMerchantName] = useState("");
   const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
@@ -874,6 +879,15 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   const [valorMes, setValorMes] = useState(String(tx.valor).replace(".", ","));
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
+
+  const possiveisDuplicatas = allTransactions.filter((t) => {
+    if (t.id === tx.id || !t.merchantId) return false;
+    if (competencia(t, fechamentosFatura) !== fatura) return false;
+    const m = merchants.find((mm) => mm.id === t.merchantId);
+    if (!m || m.name.trim().toLowerCase() !== merchantName.trim().toLowerCase()) return false;
+    if (t.categoryId !== categoryId) return false;
+    return Math.abs(t.valor - valorMesNum) <= 5;
+  });
 
   useEffect(() => {
     const isPixRaw = /^pix no cr[éÃ]©?dito\s*-/i.test(tx.estabelecimento.trim());
@@ -924,6 +938,16 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
 
   return (
     <div className={mode === "editing" ? "approval-card approval-card-editing" : "approval-card"}>
+      {possiveisDuplicatas.length > 0 && (
+        <div className="duplicate-warning">
+          <AlertTriangle size={13} color="var(--warn)" />
+          <span>
+            Parecido com {possiveisDuplicatas.length > 1 ? `${possiveisDuplicatas.length} lançamentos já aprovados` : "um lançamento já aprovado"} nesta mesma fatura
+            {possiveisDuplicatas[0] && ` (${possiveisDuplicatas[0].data.slice(8, 10)}/${possiveisDuplicatas[0].data.slice(5, 7)} · ${currency(possiveisDuplicatas[0].valor)})`}.
+          </span>
+          <button className="ignore-link" onClick={() => onIgnore(tx.id)}>Excluir esta</button>
+        </div>
+      )}
       <div className="approval-top">
         <div className="approval-field">
           <label>Data</label>
@@ -1142,6 +1166,7 @@ function Root() {
       .pendentes-cards { display: grid; gap: 10px; }
       .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
       .approval-card-editing { background: rgba(95,163,119,0.08); border-color: var(--ok); }
+      .duplicate-warning { display: flex; align-items: center; gap: 8px; background: rgba(193,97,61,0.15); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--warn); }
       .approval-top { display: flex; gap: 10px; align-items: flex-start; }
       .approval-bottom { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
