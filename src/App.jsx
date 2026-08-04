@@ -646,16 +646,17 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
   const approved = all.filter((t) => t.status === "categorizado");
   const programadas = approved.filter((t) => t.parcelaAtual > 1);
   const novas = approved.filter((t) => t.parcelaAtual === 1);
-  const pendingTotal = all.filter((t) => t.status !== "categorizado").length;
+  const pending = all.filter((t) => t.status !== "categorizado");
 
   const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
   const qtdNovasParceladas = novas.filter((t) => t.parcelaTotal > 1).length;
 
-  const list = all
-    .filter((t) => matchesSearch(t, categories, merchants, search || ""))
-    .sort((a, b) => b.data.localeCompare(a.data));
+  const q = search || "";
+  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
+  const novasF = novas.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
+  const programadasF = programadas.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
 
   return (
     <section className="bank-group">
@@ -663,7 +664,7 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <h2>{banco} · {tipo}</h2>
         <span className="group-total">
           {currency(totalFatura)}
-          {pendingTotal > 0 && <span className="of"> · {pendingTotal} pendente(s)</span>}
+          {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
         </span>
       </div>
 
@@ -674,21 +675,47 @@ function BankGroupSection({ banco, tipo, transactions, categories, merchants, pa
         <span>Parcelas programadas <strong>{currency(totalProgramadas)}</strong> ({programadas.length})</span>
       </div>
 
-      {list.length === 0 ? (
-        <p className="empty">Nada encontrado.</p>
-      ) : (
-        <div className="tx-list">
-          <div className="tx-row tx-row-head">
-            <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
-          </div>
-          {list.map((t) =>
-            t.status === "categorizado" ? (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
-            ) : (
+      {pendingF.length > 0 && (
+        <>
+          <p className="tx-subhead">Pendentes de aprovação</p>
+          <div className="pendentes-cards">
+            {pendingF.map((t) => (
               <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} onApprove={onApprove} onIgnore={onIgnore} />
-            )
-          )}
-        </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {novasF.length > 0 && (
+        <>
+          <p className="tx-subhead">Novas transações</p>
+          <div className="tx-list">
+            <div className="tx-row tx-row-head">
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+            </div>
+            {novasF.map((t) => (
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {programadasF.length > 0 && (
+        <>
+          <p className="tx-subhead">Parcelas programadas</p>
+          <div className="tx-list">
+            <div className="tx-row tx-row-head">
+              <span>Data</span><span>Estabelecimento</span><span>Categoria</span><span>Fatura</span><span>Parc.</span><span>Total</span><span>Mês</span><span /><span />
+            </div>
+            {programadasF.map((t) => (
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} fechamentosFatura={fechamentosFatura} onReject={onReject} onRemove={onRemove} />
+            ))}
+          </div>
+        </>
+      )}
+
+      {pendingF.length === 0 && novasF.length === 0 && programadasF.length === 0 && (
+        <p className="empty">Nada encontrado.</p>
       )}
     </section>
   );
@@ -718,9 +745,10 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   const [merchantName, setMerchantName] = useState("");
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
   const [fatura, setFatura] = useState(competencia(tx, fechamentosFatura));
-  const [parcelaAtual, setParcelaAtual] = useState(tx.parcelaAtual || 1);
-  const [parcelaTotal, setParcelaTotal] = useState(tx.parcelaTotal || 1);
-  const [valorMes, setValorMes] = useState(String(tx.valor));
+  const parcelaDetectada = parseParcela(tx.estabelecimento);
+  const [parcelaAtual, setParcelaAtual] = useState(parcelaDetectada.atual);
+  const [parcelaTotal, setParcelaTotal] = useState(parcelaDetectada.total);
+  const [valorMes, setValorMes] = useState(String(tx.valor).replace(".", ","));
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
@@ -761,36 +789,59 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   };
 
   return (
-    <div className="tx-row tx-row-pending">
-      <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-      <span className="tx-input-wrap">
-        <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
-        <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
-      </span>
-      <select className="ledger-cat-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
-        {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
-      <select className="ledger-cat-select" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada">
-        {nearbyMonths().map((mk) => <option key={mk} value={mk}>{mk}</option>)}
-      </select>
-      <span className="tx-parcela-edit">
-        <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />/
-        <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onChange={(e) => setParcelaTotal(parseInt(e.target.value) || 1)} />
-      </span>
-      <span className="tx-valor">{currency(valorMesNum * parcelaTotal)}</span>
-      <input className="tx-input tx-valor-input" type="text" inputMode="decimal" value={valorMes} onChange={(e) => setValorMes(e.target.value)} />
-      <button
-        className="confirm-btn"
-        disabled={!merchantName.trim()}
-        onClick={() => onApprove(tx, {
-          merchantName, categoryId,
-          competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
-          parcelaAtual, parcelaTotal, valor: valorMesNum,
-        })}
-      >
-        <Check size={14} />
-      </button>
-      <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+    <div className="approval-card">
+      <div className="approval-top">
+        <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
+        <div className="approval-field approval-field-grow">
+          <label>Estabelecimento</label>
+          <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
+          <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
+        </div>
+        <div className="approval-field">
+          <label>Categoria</label>
+          <select className="tx-input" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="approval-bottom">
+        <div className="approval-field">
+          <label>Fatura</label>
+          <select className="tx-input" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada">
+            {nearbyMonths().map((mk) => <option key={mk} value={mk}>{mk}</option>)}
+          </select>
+        </div>
+        <div className="approval-field approval-field-parcela">
+          <label>Parcela</label>
+          <span className="tx-parcela-edit">
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />
+            <span>/</span>
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onChange={(e) => setParcelaTotal(parseInt(e.target.value) || 1)} />
+          </span>
+        </div>
+        <div className="approval-field">
+          <label>Valor / mês</label>
+          <input className="tx-input tx-valor-input" type="text" inputMode="decimal" value={valorMes} onChange={(e) => setValorMes(e.target.value)} />
+        </div>
+        <div className="approval-field">
+          <label>Total</label>
+          <span className="tx-valor-total">{currency(valorMesNum * parcelaTotal)}</span>
+        </div>
+        <div className="approval-actions">
+          <button
+            className="confirm-btn"
+            disabled={!merchantName.trim()}
+            onClick={() => onApprove(tx, {
+              merchantName, categoryId,
+              competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
+              parcelaAtual, parcelaTotal, valor: valorMesNum,
+            })}
+          >
+            <Check size={14} />
+          </button>
+          <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -943,6 +994,16 @@ function Root() {
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
+      .pendentes-cards { display: grid; gap: 10px; }
+      .approval-card { background: rgba(201,162,75,0.08); border: 1px solid var(--gold); border-radius: 10px; padding: 12px; display: grid; gap: 10px; }
+      .approval-top { display: flex; gap: 10px; align-items: flex-start; }
+      .approval-bottom { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+      .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .approval-field label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+      .approval-field-grow { flex: 1; }
+      .approval-field-parcela { min-width: 70px; }
+      .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
+      .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
       .tx-list { min-width: 720px; }
       .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 46px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
