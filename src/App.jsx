@@ -138,7 +138,7 @@ const mapTransaction = (row) => ({
   id: row.id, data: row.data, estabelecimento: row.estabelecimento, valor: Number(row.valor),
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
   competenciaOverride: row.competencia_override, projetada: row.projetada,
-  parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total,
+  parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -778,39 +778,33 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
   useEffect(() => {
+    const isPixRaw = /^pix no cr[éÃ]©?dito\s*-/i.test(tx.estabelecimento.trim());
+
+    const applyMerchant = (m, cat) => {
+      const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
+      setPixCredito(hasPrefix || isPixRaw);
+      setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
+      if (cat) setCategoryId(cat);
+    };
+
     if (tx.merchantId) {
       const m = merchants.find((mm) => mm.id === tx.merchantId);
-      if (m) {
-        const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
-        setPixCredito(hasPrefix);
-        setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
-        setCategoryId(tx.categoryId || m.categoryId || categories[0]?.id);
-        return;
-      }
+      if (m) { applyMerchant(m, tx.categoryId || m.categoryId || categories[0]?.id); return; }
     }
     const patMatch = matchPattern(patterns, tx.estabelecimento);
     if (patMatch) {
       const m = merchants.find((mm) => mm.id === patMatch.merchantId);
-      if (m) {
-        const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
-        setPixCredito(hasPrefix);
-        setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
-        if (m.categoryId) setCategoryId(m.categoryId);
-        return;
-      }
+      if (m) { applyMerchant(m, m.categoryId); return; }
     }
     const alvo = tx.estabelecimento.toLowerCase();
     const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
     if (guess) {
-      const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(guess.name);
-      setPixCredito(hasPrefix);
-      setMerchantName(hasPrefix ? stripPixPrefix(guess.name) : guess.name);
-      if (guess.categoryId) setCategoryId(guess.categoryId);
+      applyMerchant(guess, guess.categoryId);
     } else {
-      const raw = stripParcela(tx.estabelecimento);
-      const looksPerson = looksLikePersonName(tx.estabelecimento);
-      setPixCredito(looksPerson);
-      setMerchantName(looksPerson ? titleCase(raw) : raw);
+      const cleaned = stripParcela(tx.estabelecimento).replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
+      const looksPerson = looksLikePersonName(cleaned);
+      setPixCredito(isPixRaw || looksPerson);
+      setMerchantName(titleCase(cleaned));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -841,6 +835,11 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, o
           <label>Estabelecimento</label>
           <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
           <span className="tx-raw-hint" title={tx.estabelecimento}>{tx.estabelecimento}</span>
+          {tx.paymentData && (
+            <span className="tx-raw-hint" style={{ color: "var(--gold)" }} title={JSON.stringify(tx.paymentData)}>
+              paymentData: {JSON.stringify(tx.paymentData)}
+            </span>
+          )}
           <label className="checkbox" style={{ marginTop: 3 }}>
             <input type="checkbox" checked={pixCredito} onChange={(e) => setPixCredito(e.target.checked)} />
             Pix no Crédito
