@@ -53,18 +53,19 @@ function competencia(dateStr, fonte, fechamentos) {
   return `${y}-${String(m).padStart(2, "0")}`;
 }
 
-function findRule(rules, estabelecimento) {
-  const alvo = estabelecimento.toLowerCase();
-  return rules.find((r) => alvo.includes(r.keyword));
+function matchPattern(patterns, estabelecimento) {
+  const alvo = (estabelecimento || "").toLowerCase();
+  return patterns.find((p) => alvo.includes(p.pattern));
 }
 
 // -- Mapeadores entre linhas do Supabase (snake_case) e o formato usado na UI --
 const mapCategory = (row) => ({ id: row.id, name: row.name, group: row.group, limit: row.limit_value });
 const mapTransaction = (row) => ({
   id: row.id, data: row.data, estabelecimento: row.estabelecimento, valor: Number(row.valor),
-  fonte: row.fonte, status: row.status, categoryId: row.category_id, suggestedCategoryId: row.suggested_category_id,
+  fonte: row.fonte, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
 });
-const mapRule = (row) => ({ keyword: row.keyword, categoryId: row.category_id, alwaysAsk: row.always_ask });
+const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
+const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
 
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = carregando, null = deslogado
@@ -84,7 +85,8 @@ function Dashboard({ userId }) {
   const [loaded, setLoaded] = useState(false);
   const [categories, setCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
-  const [rules, setRules] = useState([]);
+  const [merchants, setMerchants] = useState([]);
+  const [patterns, setPatterns] = useState([]);
   const [fechamentos, setFechamentos] = useState({ Nubank: 3, Bradesco: 8 });
   const [cursor, setCursor] = useState(new Date());
   const [showAdd, setShowAdd] = useState(false);
@@ -159,9 +161,13 @@ function Dashboard({ userId }) {
         if (txErr) throw txErr;
         setTransactions((txs || []).map(mapTransaction));
 
-        const { data: rls, error: rlsErr } = await supabase.from("rules").select("*");
-        if (rlsErr) throw rlsErr;
-        setRules((rls || []).map(mapRule));
+        const { data: merch, error: merchErr } = await supabase.from("merchants").select("*").order("name");
+        if (merchErr) throw merchErr;
+        setMerchants((merch || []).map(mapMerchant));
+
+        const { data: pats, error: patsErr } = await supabase.from("merchant_patterns").select("*");
+        if (patsErr) throw patsErr;
+        setPatterns((pats || []).map(mapPattern));
 
         const { data: settingsRow } = await supabase.from("settings").select("*").eq("key", "fechamentos").maybeSingle();
         if (settingsRow) setFechamentos(settingsRow.value);
@@ -222,48 +228,61 @@ function Dashboard({ userId }) {
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
   const addRawTransaction = async ({ data, estabelecimento, valor, fonte }) => {
-    const rule = findRule(rules, estabelecimento);
-    const row = {
-      data, estabelecimento, valor: parseFloat(valor), fonte, user_id: userId,
-      status: rule && !rule.alwaysAsk ? "categorizado" : "pendente",
-      category_id: rule && !rule.alwaysAsk ? rule.categoryId : null,
-      suggested_category_id: rule ? rule.categoryId : null,
-    };
+    const match = matchPattern(patterns, estabelecimento);
+    let status = "pendente", categoryId = null, merchantId = null;
+    if (match) {
+      const merch = merchants.find((m) => m.id === match.merchantId);
+      if (merch?.categoryId) { status = "categorizado"; categoryId = merch.categoryId; merchantId = merch.id; }
+    }
+    const row = { data, estabelecimento, valor: parseFloat(valor), fonte, user_id: userId, status, category_id: categoryId, merchant_id: merchantId };
     const { data: inserted, error } = await supabase.from("transactions").insert(row).select().single();
     if (error) { setError(error.message); return; }
     setTransactions((prev) => [mapTransaction(inserted), ...prev]);
     setShowAdd(false);
   };
 
-  const resolvePendente = async (id, categoryId, sempre) => {
-    const tx = transactions.find((t) => t.id === id);
-    if (!tx) return;
-    const keyword = tx.estabelecimento.toLowerCase();
+  const resolvePendente = async (id, { merchantName, categoryId, pattern, savePattern }) => {
+    const name = merchantName.trim();
+    if (!name || !categoryId) return;
 
-    if (sempre) {
-      // aplica também a todos os outros pendentes do mesmo estabelecimento, não só este
+    // Cria o estabelecimento se for novo, ou atualiza a categoria se já existir
+    const { data: merchant, error: merchErr } = await supabase
+      .from("merchants")
+      .upsert({ name, category_id: categoryId, user_id: userId }, { onConflict: "name,user_id" })
+      .select()
+      .single();
+    if (merchErr) { setError(merchErr.message); return; }
+    setMerchants((prev) => [...prev.filter((m) => m.id !== merchant.id), mapMerchant(merchant)]);
+
+    const keyword = (pattern || "").toLowerCase().trim();
+
+    if (savePattern && keyword) {
+      const { error: patErr } = await supabase
+        .from("merchant_patterns")
+        .upsert({ pattern: keyword, merchant_id: merchant.id, user_id: userId }, { onConflict: "pattern,user_id" });
+      if (patErr) { setError(patErr.message); return; }
+      setPatterns((prev) => [...prev.filter((p) => p.pattern !== keyword), { pattern: keyword, merchantId: merchant.id }]);
+
+      // aplica a todos os pendentes cujo texto contenha o padrão, não só este
       const { error: bulkErr } = await supabase
         .from("transactions")
-        .update({ status: "categorizado", category_id: categoryId })
+        .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id })
         .eq("status", "pendente")
-        .ilike("estabelecimento", `%${tx.estabelecimento}%`);
+        .ilike("estabelecimento", `%${keyword}%`);
       if (bulkErr) { setError(bulkErr.message); return; }
       setTransactions((prev) => prev.map((t) =>
         t.status === "pendente" && t.estabelecimento.toLowerCase().includes(keyword)
-          ? { ...t, status: "categorizado", categoryId }
+          ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id }
           : t
       ));
     } else {
-      const { error: updErr } = await supabase.from("transactions").update({ status: "categorizado", category_id: categoryId }).eq("id", id);
+      const { error: updErr } = await supabase
+        .from("transactions")
+        .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id })
+        .eq("id", id);
       if (updErr) { setError(updErr.message); return; }
-      setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "categorizado", categoryId } : t)));
+      setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id } : t)));
     }
-
-    const { error: ruleErr } = await supabase
-      .from("rules")
-      .upsert({ keyword, category_id: categoryId, always_ask: !sempre, user_id: userId }, { onConflict: "keyword,user_id" });
-    if (ruleErr) { setError(ruleErr.message); return; }
-    setRules((prev) => [...prev.filter((r) => r.keyword !== keyword), { keyword, categoryId, alwaysAsk: !sempre }]);
   };
 
   const removeTransaction = async (id) => {
@@ -279,10 +298,10 @@ function Dashboard({ userId }) {
     if (error) setError(error.message);
   };
 
-  const deleteRule = async (keyword) => {
-    const { error } = await supabase.from("rules").delete().eq("keyword", keyword);
+  const deletePattern = async (pattern) => {
+    const { error } = await supabase.from("merchant_patterns").delete().eq("pattern", pattern);
     if (error) { setError(error.message); return; }
-    setRules((prev) => prev.filter((r) => r.keyword !== keyword));
+    setPatterns((prev) => prev.filter((p) => p.pattern !== pattern));
   };
 
   const updateFechamentos = async (next) => {
@@ -356,9 +375,12 @@ function Dashboard({ userId }) {
       {pendentes.length > 0 && (
         <section className="pendentes">
           <h2 className="section-title"><Inbox size={16} /> Pendentes de categorização</h2>
+          <datalist id="merchants-list">
+            {merchants.map((m) => <option key={m.id} value={m.name} />)}
+          </datalist>
           <div className="pendentes-list">
             {pendentes.map((t) => (
-              <PendenteRow key={t.id} tx={t} categories={categories} onResolve={resolvePendente} onRemove={removeTransaction} />
+              <PendenteRow key={t.id} tx={t} categories={categories} merchants={merchants} onResolve={resolvePendente} onRemove={removeTransaction} />
             ))}
           </div>
         </section>
@@ -403,10 +425,11 @@ function Dashboard({ userId }) {
           <div className="ledger-list">
             {[...categorizadas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
               const cat = categories.find((c) => c.id === t.categoryId);
+              const merch = merchants.find((m) => m.id === t.merchantId);
               return (
                 <div key={t.id} className="ledger-row">
                   <span className="ledger-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                  <span className="ledger-desc">{t.estabelecimento}</span>
+                  <span className="ledger-desc">{merch?.name || t.estabelecimento}</span>
                   <span className="ledger-cat">{cat?.name} · {t.fonte}</span>
                   <span className="ledger-amount">{currency(t.valor)}</span>
                   <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Remover"><X size={14} /></button>
@@ -419,15 +442,25 @@ function Dashboard({ userId }) {
 
       {showAdd && <AddRawModal fontes={FONTES} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
-        <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} rules={rules} categories={categories} onDeleteRule={deleteRule} onClose={() => setShowSettings(false)} />
+        <SettingsModal fechamentos={fechamentos} setFechamentos={updateFechamentos} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
       )}
     </div>
   );
 }
 
-function PendenteRow({ tx, categories, onResolve, onRemove }) {
-  const [categoryId, setCategoryId] = useState(tx.suggestedCategoryId || categories[0]?.id);
-  const [sempre, setSempre] = useState(!tx.suggestedCategoryId);
+function PendenteRow({ tx, categories, merchants, onResolve, onRemove }) {
+  const [merchantName, setMerchantName] = useState("");
+  const [categoryId, setCategoryId] = useState(categories[0]?.id);
+  const [pattern, setPattern] = useState(tx.estabelecimento);
+  const [savePattern, setSavePattern] = useState(true);
+
+  const existing = merchants.find((m) => m.name.toLowerCase() === merchantName.trim().toLowerCase());
+
+  const handleMerchantChange = (value) => {
+    setMerchantName(value);
+    const match = merchants.find((m) => m.name.toLowerCase() === value.trim().toLowerCase());
+    if (match?.categoryId) setCategoryId(match.categoryId);
+  };
 
   return (
     <div className="pendente-row">
@@ -435,15 +468,36 @@ function PendenteRow({ tx, categories, onResolve, onRemove }) {
         <span className="pendente-estab">{tx.estabelecimento}</span>
         <span className="of">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)} · {tx.fonte} · {currency(tx.valor)}</span>
       </div>
+      <label className="pattern-label">
+        Estabelecimento (existente ou novo)
+        <input
+          className="pattern-input"
+          type="text"
+          list="merchants-list"
+          placeholder="Ex: Shein"
+          value={merchantName}
+          onChange={(e) => handleMerchantChange(e.target.value)}
+        />
+      </label>
+      <label className="pattern-label">
+        Padrão no extrato que identifica esse estabelecimento
+        <input className="pattern-input" type="text" value={pattern} onChange={(e) => setPattern(e.target.value)} />
+      </label>
       <div className="pendente-actions">
-        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} disabled={!!existing}>
           {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <label className="checkbox">
-          <input type="checkbox" checked={sempre} onChange={(e) => setSempre(e.target.checked)} />
-          sempre categorizar assim (aplica a todos os pendentes iguais)
+          <input type="checkbox" checked={savePattern} onChange={(e) => setSavePattern(e.target.checked)} />
+          lembrar esse padrão (aplica a todos os pendentes parecidos)
         </label>
-        <button className="confirm-btn" onClick={() => onResolve(tx.id, categoryId, sempre)}><Check size={14} /></button>
+        <button
+          className="confirm-btn"
+          disabled={!merchantName.trim()}
+          onClick={() => onResolve(tx.id, { merchantName, categoryId, pattern, savePattern })}
+        >
+          <Check size={14} />
+        </button>
         <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Remover"><X size={14} /></button>
       </div>
     </div>
@@ -482,7 +536,7 @@ function AddRawModal({ fontes, onClose, onSave }) {
   );
 }
 
-function SettingsModal({ fechamentos, setFechamentos, rules, categories, onDeleteRule, onClose }) {
+function SettingsModal({ fechamentos, setFechamentos, merchants, patterns, categories, onDeletePattern, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -496,16 +550,24 @@ function SettingsModal({ fechamentos, setFechamentos, rules, categories, onDelet
           <input type="number" min="1" max="31" value={fechamentos.Bradesco}
             onChange={(e) => setFechamentos({ ...fechamentos, Bradesco: parseInt(e.target.value) || 1 })} />
         </label>
-        <p className="modal-hint" style={{ marginTop: 8 }}>Regras aprendidas ({rules.length})</p>
+        <p className="modal-hint" style={{ marginTop: 8 }}>Estabelecimentos conhecidos ({merchants.length})</p>
         <div className="rules-list">
-          {rules.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhuma regra ainda — vão surgindo conforme você categoriza pendentes.</p>}
-          {rules.map((r) => {
-            const cat = categories.find((c) => c.id === r.categoryId);
+          {merchants.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhum ainda — vão surgindo conforme você categoriza pendentes.</p>}
+          {merchants.map((m) => {
+            const cat = categories.find((c) => c.id === m.categoryId);
+            const mPatterns = patterns.filter((p) => p.merchantId === m.id);
             return (
-              <div key={r.keyword} className="rule-row">
-                <span>{r.keyword}</span>
-                <span className="of">{cat?.name}{r.alwaysAsk ? " · sempre confirmar" : ""}</span>
-                <button className="ledger-remove" onClick={() => onDeleteRule(r.keyword)} aria-label="Apagar regra"><X size={13} /></button>
+              <div key={m.id} style={{ marginBottom: 8 }}>
+                <div className="rule-row">
+                  <strong>{m.name}</strong>
+                  <span className="of">{cat?.name}</span>
+                </div>
+                {mPatterns.map((p) => (
+                  <div key={p.pattern} className="rule-row" style={{ paddingLeft: 10 }}>
+                    <span className="of">↳ "{p.pattern}"</span>
+                    <button className="ledger-remove" onClick={() => onDeletePattern(p.pattern)} aria-label="Apagar padrão"><X size={13} /></button>
+                  </div>
+                ))}
               </div>
             );
           })}
@@ -548,6 +610,8 @@ function Root() {
       .pendente-row:last-child { border-bottom: none; }
       .pendente-info { display: flex; flex-direction: column; gap: 2px; }
       .pendente-estab { font-weight: 600; }
+      .pattern-label { display: block; font-size: 11px; color: var(--muted); margin: 6px 0; }
+      .pattern-input { width: 100%; margin-top: 4px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text); font-size: 13px; font-family: inherit; box-sizing: border-box; }
       .pendente-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
       .pendente-actions select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text); font-size: 13px; }
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
