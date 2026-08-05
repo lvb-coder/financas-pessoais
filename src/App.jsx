@@ -200,12 +200,28 @@ function Mask({ value, active, mono, dots = "••••" }) {
   );
 }
 
-function matchesSearch(tx, categories, merchants, query) {
+function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
+
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const nome = (merch?.name || tx.estabelecimento).toLowerCase();
   if (nome.includes(q)) return true;
+
+  const cat = categories.find((c) => c.id === tx.categoryId);
+  if (cat && cat.name.toLowerCase().includes(q)) return true;
+
+  const dataFmt = `${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}`;
+  if (dataFmt.includes(q) || tx.data.includes(q)) return true;
+
+  if (fechamentosFatura) {
+    const fatura = competencia(tx, fechamentosFatura);
+    if (fatura.toLowerCase().includes(q)) return true;
+  }
+
+  const parcelaStr = `${tx.parcelaAtual}/${tx.parcelaTotal}`;
+  if (parcelaStr.includes(q)) return true;
+
   const qNum = q.replace(",", ".").replace(/[^\d.]/g, "");
   if (qNum) {
     const total = (tx.valor * tx.parcelaTotal).toFixed(2);
@@ -494,7 +510,7 @@ function Dashboard({ userId }) {
   const globalSearchResults = useMemo(() => {
     if (!search.trim()) return [];
     return transactions
-      .filter((t) => t.status !== "excluida" && matchesSearch(t, categories, merchants, search))
+      .filter((t) => t.status !== "excluida" && matchesSearch(t, categories, merchants, search, fechamentosFatura))
       .map((t) => ({ ...t, fatura: displayMonth(t, fechamentosFatura) }))
       .sort((a, b) => b.data.localeCompare(a.data));
   }, [search, transactions, categories, merchants, fechamentosFatura]);
@@ -1131,9 +1147,9 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
     });
 
   const q = search || "";
-  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas), sortNovas);
-  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas), sortProgramadas);
+  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)).sort((a, b) => b.data.localeCompare(a.data));
+  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), filtrosNovas), sortNovas);
+  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), filtrosProgramadas), sortProgramadas);
 
   const opcoesFiltro = (list) => ({
     estabs: [...new Set(list.map(nomeDe))].sort(),
@@ -1402,7 +1418,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
           <span className="tx-valor-total"><Mask value={currency(valorMesNum)} active={hidden} mono /></span>
         </div>
         <div className="approval-field">
-          <label>Total</label>
+          <label>Valor Total</label>
           <span className="tx-valor-total"><Mask value={currency(valorMesNum * parcelaTotal)} active={hidden} mono /></span>
         </div>
         <div className="approval-actions">
