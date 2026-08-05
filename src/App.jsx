@@ -233,7 +233,7 @@ function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
 
 // Duas transações "parecidas": mesmo estabelecimento + categoria, valor a até R$5 de diferença
 function isSimilar(a, b) {
-  return a.merchantId && a.merchantId === b.merchantId && a.categoryId === b.categoryId && Math.abs(a.valor - b.valor) <= 1.5;
+  return a.merchantId && a.merchantId === b.merchantId && a.categoryId === b.categoryId && Math.abs(a.valor - b.valor) <= 0.5;
 }
 
 // Agrupa transações aprovadas (e ainda não revisadas) que parecem duplicadas,
@@ -507,13 +507,6 @@ function Dashboard({ userId }) {
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
   const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
   const duplicateGroups = useMemo(() => findDuplicateGroups(transactions, fechamentosFatura), [transactions, fechamentosFatura]);
-  const globalSearchResults = useMemo(() => {
-    if (!search.trim()) return [];
-    return transactions
-      .filter((t) => t.status !== "excluida" && matchesSearch(t, categories, merchants, search, fechamentosFatura))
-      .map((t) => ({ ...t, fatura: displayMonth(t, fechamentosFatura) }))
-      .sort((a, b) => b.data.localeCompare(a.data));
-  }, [search, transactions, categories, merchants, fechamentosFatura]);
 
   const spentByCategory = useMemo(() => {
     const map = {};
@@ -783,48 +776,13 @@ function Dashboard({ userId }) {
       {view === "transacoes" && (
         <div className="subview-tabs">
           <button className={"subtab-btn" + (subView === "mensal" ? " active" : "")} onClick={() => setSubView("mensal")}>Por mês</button>
-          <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Total</button>
+          <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Todos</button>
           {subView === "geral" && (
             <button className="subtab-btn reset-btn" onClick={resetFiltros} title="Limpar filtros, voltar pra ordenação padrão e mês atual">
               <RotateCcw size={12} /> Redefinir
             </button>
           )}
         </div>
-      )}
-
-      {view === "transacoes" && search.trim() && (
-        <section className="search-panel">
-          <p className="tx-subhead" style={{ margin: "0 0 8px" }}>
-            {globalSearchResults.length} resultado(s) em todas as faturas
-          </p>
-          {globalSearchResults.length === 0 ? (
-            <p className="empty">Nada encontrado.</p>
-          ) : (
-            <div className="search-results-list">
-              {globalSearchResults.map((t) => {
-                const merch = merchants.find((m) => m.id === t.merchantId);
-                return (
-                  <div
-                    key={t.id}
-                    className="search-result-row"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => {
-                      const [y, m] = t.fatura.split("-").map(Number);
-                      setCursor(new Date(y, m - 1, 1));
-                    }}
-                  >
-                    <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span className="tx-desc"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
-                    <span className="of"><Mask value={`${t.banco} · ${t.tipo}`} active={seguro} /></span>
-                    <span className="of">fatura {t.fatura}</span>
-                    <span className="tx-valor-total"><Mask value={currency(t.valor)} active={hidden} mono /></span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
       )}
 
       {view === "transacoes" && subView === "mensal" && (
@@ -867,11 +825,13 @@ function Dashboard({ userId }) {
           fechamentosFatura={fechamentosFatura}
           hidden={hidden}
           seguro={seguro}
+          search={search}
           filtros={geralFiltros}
           setFiltros={setGeralFiltros}
           sort={geralSort}
           setSort={setGeralSort}
           onApprove={resolveApproval}
+          onIgnore={removeTransaction}
           onRevert={rejectTransaction}
           onRemove={removeTransaction}
         />
@@ -884,23 +844,19 @@ function Dashboard({ userId }) {
             <p className="empty">Nada na lixeira.</p>
           ) : (
             <div className="tx-list">
+              <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 18px 18px" }}>
+                <span>Data</span><span>Estabelecimento</span><span>Valor Total</span><span>Valor/Mês</span><span /><span />
+              </div>
               {[...excluidas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
                 const merch = merchants.find((m) => m.id === t.merchantId);
                 return (
-                  <div key={t.id} className="tx-card">
-                    <div className="tx-card-main">
-                      <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                      <span className="tx-card-estab"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
-                    </div>
-                    <div className="tx-card-meta">
-                      <span className="tx-card-valores">
-                        <Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono />
-                        <span className="of"> / </span>
-                        <Mask value={currency(t.valor)} active={hidden} mono />
-                      </span>
-                      <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
-                      <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
-                    </div>
+                  <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 18px 18px" }}>
+                    <span className="tx-cell">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                    <span className="tx-cell tx-cell-estab"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                    <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
+                    <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor)} active={hidden} mono /></span>
+                    <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
+                    <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
                   </div>
                 );
               })}
@@ -957,8 +913,6 @@ function SortableHead({ sort, setSort, seguro }) {
     { key: "estabelecimento", label: "Estabelecimento" },
     { key: "categoria", label: "Categoria" },
     { key: "fatura", label: "Fatura" },
-    { key: "total", label: "Valor Total" },
-    { key: "mes", label: "Valor/Mês" },
   ];
   const click = (key) => setSort((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: 1 }));
   const arrow = (key) => (sort.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : "");
@@ -971,8 +925,8 @@ function SortableHead({ sort, setSort, seguro }) {
   const parcelamentoArrow = (sort.key === "parcelaAtual" || sort.key === "parcelaTotal") ? (sort.dir === 1 ? " ▲" : " ▼") : "";
   const parcelamentoTitle = sort.key === "parcelaTotal" ? "Ordenando por quantidade de parcelas" : "Ordenando por número da parcela atual";
   return (
-    <div className="tx-head-bar">
-      {cols.slice(0, 4).map((c) => (
+    <div className="tx-row tx-row-head">
+      {cols.map((c) => (
         <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
           <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
         </button>
@@ -980,12 +934,10 @@ function SortableHead({ sort, setSort, seguro }) {
       <button className="tx-head-btn" onClick={clickParcelamento} title={parcelamentoTitle}>
         <MaskText value="Parcelamento" active={seguro} show={revealed} />{parcelamentoArrow}
       </button>
-      {cols.slice(4).map((c) => (
-        <button key={c.key} className="tx-head-btn tx-head-btn-center" onClick={() => click(c.key)}>
-          <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
-        </button>
-      ))}
-      {seguro && <RevealButton onHoldChange={setRevealed} small />}
+      <button className="tx-head-btn" onClick={() => click("total")}><MaskText value="Valor Total" active={seguro} show={revealed} />{arrow("total")}</button>
+      <button className="tx-head-btn" onClick={() => click("mes")}><MaskText value="Valor/Mês" active={seguro} show={revealed} />{arrow("mes")}</button>
+      {seguro ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
+      <span /><span />
     </div>
   );
 }
@@ -1019,8 +971,10 @@ function MultiFilter({ label, options, selected, onChange, seguro }) {
   );
 }
 
-function GeralView({ transactions, categories, merchants, patterns, fechamentosFatura, hidden, seguro, filtros, setFiltros, sort, setSort, onApprove, onRevert, onRemove }) {
-  const all = transactions.filter((t) => t.status === "categorizado" && t.tipo === "Crédito");
+function GeralView({ transactions, categories, merchants, patterns, fechamentosFatura, hidden, seguro, search, filtros, setFiltros, sort, setSort, onApprove, onIgnore, onRevert, onRemove }) {
+  const todasCredito = transactions.filter((t) => t.tipo === "Crédito" && t.status !== "excluida");
+  const all = todasCredito.filter((t) => t.status === "categorizado");
+  const pending = todasCredito.filter((t) => t.status !== "categorizado");
   const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
 
   const opcoes = {
@@ -1034,7 +988,11 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
     faturas: [...new Set(all.map((t) => competencia(t, fechamentosFatura)))].sort(),
   };
 
+  const q = search || "";
+  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)).sort((a, b) => b.data.localeCompare(a.data));
+
   const filtrados = all.filter((t) => {
+    if (!matchesSearch(t, categories, merchants, q, fechamentosFatura)) return false;
     if (filtros.bancos.length && !filtros.bancos.includes(t.banco)) return false;
     if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
     if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
@@ -1074,19 +1032,30 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
 
       <div className="filter-row" style={{ marginBottom: 14 }}>
         <MultiFilter label="Bancos" options={opcoes.bancos.map((b) => ({ value: b, label: b }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
-        <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
+        <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
         <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={filtros.estabs} onChange={(v) => setFiltros({ ...filtros, estabs: v })} seguro={seguro} />
         <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtros.categorias} onChange={(v) => setFiltros({ ...filtros, categorias: v })} seguro={seguro} />
         <MultiFilter label="Faturas" options={opcoes.faturas.map((f) => ({ value: f, label: f }))} selected={filtros.faturas} onChange={(v) => setFiltros({ ...filtros, faturas: v })} seguro={seguro} />
       </div>
 
+      {pendingF.length > 0 && (
+        <>
+          <p className="tx-subhead"><Mask value="Pendentes de aprovação" active={seguro} /></p>
+          <div className="pendentes-cards">
+            {pendingF.map((t) => (
+              <ApprovalRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} allTransactions={all} hidden={hidden} seguro={seguro} onApprove={onApprove} onIgnore={onIgnore} />
+            ))}
+          </div>
+        </>
+      )}
+
       {ordenados.length === 0 ? (
-        <p className="empty">Nada encontrado.</p>
+        pendingF.length === 0 && <p className="empty">Nada encontrado.</p>
       ) : (
         <div className="tx-list">
           <SortableHead sort={sort} setSort={setSort} seguro={seguro} />
           {ordenados.map((t) => (
-            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showYear onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
           ))}
         </div>
       )}
@@ -1095,8 +1064,6 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
 }
 
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
-  const [filtrosNovas, setFiltrosNovas] = useState({ estabs: [], categorias: [], datas: [], faturas: [] });
-  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estabs: [], categorias: [], datas: [], faturas: [] });
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -1116,14 +1083,6 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
   const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
-
-  const aplicarFiltros = (list, filtros) => list.filter((t) => {
-    if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
-    if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
-    if (filtros.faturas.length && !filtros.faturas.includes(competencia(t, fechamentosFatura))) return false;
-    if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
-    return true;
-  });
 
   const sortValue = (t, key) => {
     switch (key) {
@@ -1148,20 +1107,8 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), filtrosNovas), sortNovas);
-  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), filtrosProgramadas), sortProgramadas);
-
-  const opcoesFiltro = (list) => ({
-    estabs: [...new Set(list.map(nomeDe))].sort(),
-    categorias: [...new Set(list.map((t) => t.categoryId))]
-      .map((id) => categories.find((c) => c.id === id))
-      .filter(Boolean)
-      .sort((a, b) => a.name.localeCompare(b.name)),
-    datas: [...new Set(list.map((t) => t.data))].sort(),
-    faturas: [...new Set(list.map((t) => competencia(t, fechamentosFatura)))].sort(),
-  });
-  const opcoesNovas = opcoesFiltro(novas);
-  const opcoesProgramadas = opcoesFiltro(programadas);
+  const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortNovas);
+  const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortProgramadas);
 
   return (
     <section className="bank-group">
@@ -1189,15 +1136,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {novasF.length > 0 && (
         <>
-          <div className="tx-subhead-row">
-            <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
-            <div className="filter-row">
-              <MultiFilter label="Datas" options={opcoesNovas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosNovas.datas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, datas: v })} seguro={seguro} />
-              <MultiFilter label="Estabelecimentos" options={opcoesNovas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosNovas.estabs} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, estabs: v })} seguro={seguro} />
-              <MultiFilter label="Categorias" options={opcoesNovas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosNovas.categorias} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, categorias: v })} seguro={seguro} />
-              <MultiFilter label="Faturas" options={opcoesNovas.faturas.map((f) => ({ value: f, label: f }))} selected={filtrosNovas.faturas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, faturas: v })} seguro={seguro} />
-            </div>
-          </div>
+          <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
           <div className="tx-list">
             <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} />
             {novasF.map((t) => (
@@ -1209,15 +1148,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {programadasF.length > 0 && (
         <>
-          <div className="tx-subhead-row">
-            <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
-            <div className="filter-row">
-              <MultiFilter label="Datas" options={opcoesProgramadas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosProgramadas.datas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, datas: v })} seguro={seguro} />
-              <MultiFilter label="Estabelecimentos" options={opcoesProgramadas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosProgramadas.estabs} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, estabs: v })} seguro={seguro} />
-              <MultiFilter label="Categorias" options={opcoesProgramadas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosProgramadas.categorias} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, categorias: v })} seguro={seguro} />
-              <MultiFilter label="Faturas" options={opcoesProgramadas.faturas.map((f) => ({ value: f, label: f }))} selected={filtrosProgramadas.faturas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, faturas: v })} seguro={seguro} />
-            </div>
-          </div>
+          <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
           <div className="tx-list">
             <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} />
             {programadasF.map((t) => (
@@ -1234,7 +1165,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
@@ -1259,26 +1190,19 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   }
 
   return (
-    <div className="tx-card">
-      <div className="tx-card-main">
-        <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-        <span className="tx-card-estab" title={seguro ? "" : tx.estabelecimento}>
-          <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
-        </span>
-        <span className="tx-card-cat"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
-      </div>
-      <div className="tx-card-meta">
-        <span className="of">{competencia(tx, fechamentosFatura)}</span>
-        <span className="of">parc. {tx.parcelaAtual}/{tx.parcelaTotal}</span>
-        <span className="tx-card-valores">
-          <MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono />
-          <span className="of"> / </span>
-          <MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono />
-        </span>
-        {(hidden || seguro) && <RevealButton onHoldChange={setRevealed} small />}
-        <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
-        <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
-      </div>
+    <div className="tx-row">
+      <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}{showYear ? `/${tx.data.slice(0, 4)}` : ""}</span>
+      <span className="tx-cell tx-cell-estab" title={seguro ? "" : tx.estabelecimento}>
+        <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
+      </span>
+      <span className="tx-cell"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
+      <span className="tx-cell">{competencia(tx, fechamentosFatura)}</span>
+      <span className="tx-cell">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
+      <span className="tx-cell tx-cell-mono"><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
+      <span className="tx-cell tx-cell-mono"><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
+      {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
+      <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
+      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
   );
 }
@@ -1303,7 +1227,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     const m = merchants.find((mm) => mm.id === t.merchantId);
     if (!m || m.name.trim().toLowerCase() !== nomeCompleto) return false;
     if (t.categoryId !== categoryId) return false;
-    return Math.abs(t.valor - valorMesNum) <= 1.5;
+    return Math.abs(t.valor - valorMesNum) <= 0.5;
   });
 
   useEffect(() => {
@@ -1622,17 +1546,14 @@ function Root() {
       .approval-field-parcela { min-width: 70px; }
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
-      .tx-list { display: grid; gap: 8px; }
-      .tx-head-bar { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
-      .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; padding: 0; font-family: inherit; }
-      .tx-head-btn-center { text-align: center; }
+      .tx-list { display: grid; gap: 2px; }
+      .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; }
+      .tx-row-head { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 2px; }
+      .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+      .tx-cell-estab { font-weight: 500; }
+      .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
+      .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
-      .tx-card { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; min-width: 0; box-sizing: border-box; }
-      .tx-card-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
-      .tx-card-estab { font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
-      .tx-card-cat { font-size: 12px; color: var(--muted); }
-      .tx-card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
-      .tx-card-valores { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text); white-space: nowrap; }
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-row-duplicada { background: rgba(193,97,61,0.08); border-radius: 6px; }
