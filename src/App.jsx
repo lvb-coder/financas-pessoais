@@ -297,7 +297,7 @@ function Dashboard({ userId }) {
   const [search, setSearch] = useState("");
   const [subView, setSubView] = useState(() => loadLS("subView", "mensal")); // mensal | geral
   const [privacyMode, setPrivacyMode] = useState(() => loadLS("privacyMode", "normal")); // normal | privado | seguro
-  const [geralFiltros, setGeralFiltros] = useState(() => loadLS("geralFiltros", { estabs: [], categorias: [], bancos: [], datas: [] }));
+  const [geralFiltros, setGeralFiltros] = useState(() => loadLS("geralFiltros", { estabs: [], categorias: [], bancos: [], datas: [], faturas: [] }));
   const [geralSort, setGeralSort] = useState(() => loadLS("geralSort", { key: "data", dir: -1 }));
   const hidden = privacyMode !== "normal";
   const seguro = privacyMode === "seguro";
@@ -309,7 +309,7 @@ function Dashboard({ userId }) {
   useEffect(() => { saveLS("geralSort", geralSort); }, [geralSort]);
 
   const resetFiltros = () => {
-    setGeralFiltros({ estabs: [], categorias: [], bancos: [], datas: [] });
+    setGeralFiltros({ estabs: [], categorias: [], bancos: [], datas: [], faturas: [] });
     setGeralSort({ key: "data", dir: -1 });
     setCursor(new Date());
   };
@@ -972,12 +972,14 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
       .filter(Boolean)
       .sort((a, b) => a.name.localeCompare(b.name)),
     datas: [...new Set(all.map((t) => t.data))].sort(),
+    faturas: [...new Set(all.map((t) => competencia(t, fechamentosFatura)))].sort(),
   };
 
   const filtrados = all.filter((t) => {
     if (filtros.bancos.length && !filtros.bancos.includes(t.banco)) return false;
     if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
     if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
+    if (filtros.faturas.length && !filtros.faturas.includes(competencia(t, fechamentosFatura))) return false;
     if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
     return true;
   });
@@ -1016,6 +1018,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
         <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
         <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={filtros.estabs} onChange={(v) => setFiltros({ ...filtros, estabs: v })} seguro={seguro} />
         <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtros.categorias} onChange={(v) => setFiltros({ ...filtros, categorias: v })} seguro={seguro} />
+        <MultiFilter label="Faturas" options={opcoes.faturas.map((f) => ({ value: f, label: f }))} selected={filtros.faturas} onChange={(v) => setFiltros({ ...filtros, faturas: v })} seguro={seguro} />
       </div>
 
       {ordenados.length === 0 ? (
@@ -1033,6 +1036,8 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
 }
 
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
+  const [filtrosNovas, setFiltrosNovas] = useState({ estabs: [], categorias: [], datas: [], faturas: [] });
+  const [filtrosProgramadas, setFiltrosProgramadas] = useState({ estabs: [], categorias: [], datas: [], faturas: [] });
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -1052,6 +1057,14 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
   const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
+
+  const aplicarFiltros = (list, filtros) => list.filter((t) => {
+    if (filtros.categorias.length && !filtros.categorias.includes(t.categoryId)) return false;
+    if (filtros.datas.length && !filtros.datas.includes(t.data)) return false;
+    if (filtros.faturas.length && !filtros.faturas.includes(competencia(t, fechamentosFatura))) return false;
+    if (filtros.estabs.length && !filtros.estabs.includes(nomeDe(t))) return false;
+    return true;
+  });
 
   const sortValue = (t, key) => {
     switch (key) {
@@ -1076,8 +1089,20 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
   const q = search || "";
   const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q)).sort((a, b) => b.data.localeCompare(a.data));
-  const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q)), sortNovas);
-  const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), sortProgramadas);
+  const novasF = aplicarOrdenacao(aplicarFiltros(novas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosNovas), sortNovas);
+  const programadasF = aplicarOrdenacao(aplicarFiltros(programadas.filter((t) => matchesSearch(t, categories, merchants, q)), filtrosProgramadas), sortProgramadas);
+
+  const opcoesFiltro = (list) => ({
+    estabs: [...new Set(list.map(nomeDe))].sort(),
+    categorias: [...new Set(list.map((t) => t.categoryId))]
+      .map((id) => categories.find((c) => c.id === id))
+      .filter(Boolean)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    datas: [...new Set(list.map((t) => t.data))].sort(),
+    faturas: [...new Set(list.map((t) => competencia(t, fechamentosFatura)))].sort(),
+  });
+  const opcoesNovas = opcoesFiltro(novas);
+  const opcoesProgramadas = opcoesFiltro(programadas);
 
   return (
     <section className="bank-group">
@@ -1091,7 +1116,6 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       <div className="fatura-summary">
         <span>{seguro ? <Mask value={`Total da fatura ${currency(totalFatura)}`} active mono /> : <>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></>}</span>
-        <span>{seguro ? <Mask value={`Qtd. transações ${approved.length}`} active /> : <>Qtd. transações <strong>{approved.length}</strong></>}</span>
         <span>{seguro ? <Mask value={`Novas transações ${currency(totalNovas)} (${novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</>}</span>
         <span>{seguro ? <Mask value={`Parcelas programadas ${currency(totalProgramadas)} (${programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</>}</span>
       </div>
@@ -1109,7 +1133,15 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {novasF.length > 0 && (
         <>
-          <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
+          <div className="tx-subhead-row">
+            <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
+            <div className="filter-row">
+              <MultiFilter label="Datas" options={opcoesNovas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosNovas.datas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, datas: v })} seguro={seguro} />
+              <MultiFilter label="Estabelecimentos" options={opcoesNovas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosNovas.estabs} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, estabs: v })} seguro={seguro} />
+              <MultiFilter label="Categorias" options={opcoesNovas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosNovas.categorias} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, categorias: v })} seguro={seguro} />
+              <MultiFilter label="Faturas" options={opcoesNovas.faturas.map((f) => ({ value: f, label: f }))} selected={filtrosNovas.faturas} onChange={(v) => setFiltrosNovas({ ...filtrosNovas, faturas: v })} seguro={seguro} />
+            </div>
+          </div>
           <div className="tx-list">
             <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} />
             {novasF.map((t) => (
@@ -1121,7 +1153,15 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {programadasF.length > 0 && (
         <>
-          <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
+          <div className="tx-subhead-row">
+            <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
+            <div className="filter-row">
+              <MultiFilter label="Datas" options={opcoesProgramadas.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}` }))} selected={filtrosProgramadas.datas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, datas: v })} seguro={seguro} />
+              <MultiFilter label="Estabelecimentos" options={opcoesProgramadas.estabs.map((e) => ({ value: e, label: e }))} selected={filtrosProgramadas.estabs} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, estabs: v })} seguro={seguro} />
+              <MultiFilter label="Categorias" options={opcoesProgramadas.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtrosProgramadas.categorias} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, categorias: v })} seguro={seguro} />
+              <MultiFilter label="Faturas" options={opcoesProgramadas.faturas.map((f) => ({ value: f, label: f }))} selected={filtrosProgramadas.faturas} onChange={(v) => setFiltrosProgramadas({ ...filtrosProgramadas, faturas: v })} seguro={seguro} />
+            </div>
+          </div>
           <div className="tx-list">
             <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} />
             {programadasF.map((t) => (
