@@ -1031,7 +1031,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
       </div>
 
       <div className="filter-row" style={{ marginBottom: 14 }}>
-        <MultiFilter label="Bancos" options={opcoes.bancos.map((b) => ({ value: b, label: b }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
+        <MultiFilter label="Cartão" options={opcoes.bancos.map((b) => ({ value: b, label: b }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
         <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
         <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={filtros.estabs} onChange={(v) => setFiltros({ ...filtros, estabs: v })} seguro={seguro} />
         <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtros.categorias} onChange={(v) => setFiltros({ ...filtros, categorias: v })} seguro={seguro} />
@@ -1231,10 +1231,11 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   });
 
   useEffect(() => {
-    const isPixRaw = /^pix no cr[éÃ]©?dito\s*-/i.test(tx.estabelecimento.trim());
+    const isBradesco = tx.banco === "Bradesco";
+    const isPixRaw = !isBradesco && /^pix no cr[éÃ]©?dito\s*-/i.test(tx.estabelecimento.trim());
 
     const applyMerchant = (m, cat) => {
-      const hasPrefix = /^pix no cr[ée]dito\s*-/i.test(m.name);
+      const hasPrefix = !isBradesco && /^pix no cr[ée]dito\s*-/i.test(m.name);
       setPixCredito(hasPrefix || isPixRaw);
       setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
       if (cat) setCategoryId(cat);
@@ -1255,7 +1256,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
       applyMerchant(guess, guess.categoryId);
     } else {
       const cleaned = stripParcela(tx.estabelecimento).replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
-      const looksPerson = looksLikePersonName(cleaned);
+      const looksPerson = !isBradesco && looksLikePersonName(cleaned);
       setPixCredito(isPixRaw || looksPerson);
       setMerchantName(titleCase(cleaned));
     }
@@ -1312,10 +1313,12 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
               paymentData: {JSON.stringify(tx.paymentData)}
             </span>
           )}
-          <label className="checkbox" style={{ marginTop: 3 }}>
-            <input type="checkbox" checked={pixCredito} onChange={(e) => setPixCredito(e.target.checked)} />
-            Pix no Crédito
-          </label>
+          {tx.banco !== "Bradesco" && (
+            <label className="checkbox" style={{ marginTop: 3 }}>
+              <input type="checkbox" checked={pixCredito} onChange={(e) => setPixCredito(e.target.checked)} />
+              Pix no Crédito
+            </label>
+          )}
         </div>
         <div className="approval-field">
           <label>Categoria</label>
