@@ -200,6 +200,10 @@ function Mask({ value, active, mono, dots = "••••" }) {
   );
 }
 
+function displayBanco(b) {
+  return b === "Nubank" ? "NuBank" : b;
+}
+
 function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -544,7 +548,7 @@ function Dashboard({ userId }) {
 
   // Aprova (ou edita) uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez.
   // Funciona tanto pra aprovar uma pendente quanto pra editar uma já aprovada — sem mudar o status nesse segundo caso.
-  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data }) => {
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito }) => {
     const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
@@ -611,6 +615,30 @@ function Dashboard({ userId }) {
         const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
         if (projErr) { setError(projErr.message); return; }
         setTransactions((prev) => [...prev, ...(inseridas || []).map(mapTransaction)]);
+      }
+    }
+
+    // Pix no Crédito à vista (valor total = valor/mês): procura pendentes de OUTROS meses
+    // com o mesmo valor exato — o mesmo pagamento tende a se repetir mês a mês com um
+    // texto bruto diferente (nome/registro muda), então o padrão de texto sozinho não pega.
+    if (pixCredito && parcelaTotal === 1) {
+      const candidatos = transactions.filter((t) =>
+        t.id !== tx.id &&
+        t.status !== "categorizado" && t.status !== "excluida" &&
+        t.banco === tx.banco && t.tipo === tx.tipo &&
+        t.parcelaTotal === 1 &&
+        Math.abs(t.valor - valor) < 0.005
+      );
+      if (candidatos.length > 0) {
+        const ids = candidatos.map((t) => t.id);
+        const { error: pixErr } = await supabase
+          .from("transactions")
+          .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: 1, parcela_total: 1 })
+          .in("id", ids);
+        if (pixErr) { setError(pixErr.message); return; }
+        setTransactions((prev) => prev.map((t) =>
+          ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1 } : t
+        ));
       }
     }
   };
@@ -746,7 +774,7 @@ function Dashboard({ userId }) {
                 {group.map((t) => (
                   <div key={t.id} className="duplicate-item">
                     <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span>{t.banco} · {t.tipo}</span>
+                    <span>{displayBanco(t.banco)} · {t.tipo}</span>
                     <span className="tx-valor-total"><Mask value={currency(t.valor)} active={hidden} mono /></span>
                     <button className="ledger-remove" onClick={() => removeTransaction(t.id)} aria-label="Excluir" title="Excluir esta"><X size={14} /></button>
                   </div>
@@ -777,7 +805,7 @@ function Dashboard({ userId }) {
         <div className="subview-tabs">
           <button className={"subtab-btn" + (subView === "mensal" ? " active" : "")} onClick={() => setSubView("mensal")}>Por mês</button>
           <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Todos</button>
-          {subView === "geral" && (
+          {subView === "geral" && Object.values(geralFiltros).some((v) => v.length > 0) && (
             <button className="subtab-btn reset-btn" onClick={resetFiltros} title="Limpar filtros, voltar pra ordenação padrão e mês atual">
               <RotateCcw size={12} /> Redefinir
             </button>
@@ -927,7 +955,7 @@ function SortableHead({ sort, setSort, seguro }) {
   return (
     <div className="tx-row tx-row-head">
       {cols.map((c) => (
-        <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
+        <button key={c.key} className={"tx-head-btn" + (c.key === "estabelecimento" ? " tx-head-btn-left" : "")} onClick={() => click(c.key)}>
           <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
         </button>
       ))}
@@ -1031,7 +1059,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
       </div>
 
       <div className="filter-row" style={{ marginBottom: 14 }}>
-        <MultiFilter label="Cartão" options={opcoes.bancos.map((b) => ({ value: b, label: b }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
+        <MultiFilter label="Cartão" options={opcoes.bancos.map((b) => ({ value: b, label: displayBanco(b) }))} selected={filtros.bancos} onChange={(v) => setFiltros({ ...filtros, bancos: v })} seguro={seguro} />
         <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` }))} selected={filtros.datas} onChange={(v) => setFiltros({ ...filtros, datas: v })} seguro={seguro} />
         <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={filtros.estabs} onChange={(v) => setFiltros({ ...filtros, estabs: v })} seguro={seguro} />
         <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={filtros.categorias} onChange={(v) => setFiltros({ ...filtros, categorias: v })} seguro={seguro} />
@@ -1113,7 +1141,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   return (
     <section className="bank-group">
       <div className="group-head">
-        <h2><Mask value={`${banco} · ${tipo}`} active={seguro} /></h2>
+        <h2><Mask value={`${displayBanco(banco)} · ${tipo}`} active={seguro} /></h2>
         {pending.length > 0 && <span className="group-total of">{pending.length} pendente(s)</span>}
       </div>
 
@@ -1191,11 +1219,11 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
 
   return (
     <div className="tx-row">
-      <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}{showYear ? `/${tx.data.slice(0, 4)}` : ""}</span>
-      <span className="tx-cell tx-cell-estab" title={seguro ? "" : tx.estabelecimento}>
+      <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
+      <span className="tx-cell tx-cell-estab" title={seguro ? "" : (merch?.name || tx.estabelecimento)}>
         <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
       </span>
-      <span className="tx-cell"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
+      <span className="tx-cell" title={seguro ? "" : (cat?.name || "")}><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
       <span className="tx-cell">{competencia(tx, fechamentosFatura)}</span>
       <span className="tx-cell">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
       <span className="tx-cell tx-cell-mono"><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
@@ -1274,7 +1302,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     onApprove(tx, {
       merchantName: nomeFinal, categoryId,
       competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
-      parcelaAtual, parcelaTotal, valor: valorMesNum, data,
+      parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito,
     });
   };
 
@@ -1291,7 +1319,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
             {possiveisDuplicatas.map((d) => (
               <div key={d.id} className="duplicate-warning-item">
                 <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
-                <span><Mask value={`${d.banco} · ${d.tipo}`} active={seguro} /></span>
+                <span><Mask value={`${displayBanco(d.banco)} · ${d.tipo}`} active={seguro} /></span>
                 <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
                 <span className="tx-valor-total"><Mask value={currency(d.valor)} active={hidden} mono /></span>
               </div>
@@ -1395,7 +1423,7 @@ function AddRawModal({ tipos, bancos, onClose, onSave }) {
         </label>
         <label>Banco
           <select value={banco} onChange={(e) => setBanco(e.target.value)}>
-            {bancos.map((b) => <option key={b} value={b}>{b}</option>)}
+            {bancos.map((b) => <option key={b} value={b}>{displayBanco(b)}</option>)}
           </select>
         </label>
         <button type="submit" className="submit-btn">Adicionar</button>
@@ -1425,7 +1453,7 @@ function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento
         <form onSubmit={submitFechamento} style={{ display: "grid", gap: 10 }}>
           <label>Banco
             <select value={banco} onChange={(e) => setBanco(e.target.value)}>
-              <option value="Nubank">Nubank</option>
+              <option value="Nubank">NuBank</option>
               <option value="Bradesco">Bradesco</option>
             </select>
           </label>
@@ -1443,7 +1471,7 @@ function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento
           {fechamentosFatura.length === 0 && <p className="empty" style={{ padding: "8px 0" }}>Nenhum ainda.</p>}
           {[...fechamentosFatura].sort((a, b) => b.competencia.localeCompare(a.competencia)).map((f) => (
             <div key={f.id} className="rule-row">
-              <span>{f.banco} · {f.competencia}</span>
+              <span>{displayBanco(f.banco)} · {f.competencia}</span>
               <span className="of">{new Date(f.fechamento).toLocaleDateString("pt-BR", { timeZone: "UTC" })}</span>
               <button className="ledger-remove" onClick={() => onDeleteFechamento(f.id)} aria-label="Apagar fechamento"><X size={13} /></button>
             </div>
@@ -1553,10 +1581,11 @@ function Root() {
       .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; }
       .tx-row-head { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 2px; }
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-      .tx-cell-estab { font-weight: 500; }
+      .tx-cell-estab { font-weight: 500; text-align: left; }
       .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
+      .tx-head-btn-left { text-align: left; }
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-row-duplicada { background: rgba(193,97,61,0.08); border-radius: 6px; }
