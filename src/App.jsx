@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, Component } from "react";
 import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
@@ -264,6 +264,34 @@ function saveLS(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: "100vh", background: "#0F1613", color: "#EDEBE4", padding: 24, fontFamily: "sans-serif" }}>
+          <h2 style={{ color: "#C1613D" }}>Deu um erro na tela</h2>
+          <p>Isso costuma acontecer depois de uma atualização, quando dados salvos no navegador ficam num formato antigo.</p>
+          <p style={{ fontSize: 12, opacity: 0.7, marginTop: 16 }}>{String(this.state.error?.message || this.state.error)}</p>
+          <button
+            onClick={() => { localStorage.clear(); window.location.reload(); }}
+            style={{ marginTop: 16, background: "#C9A24B", color: "#0F1613", border: "none", borderRadius: 999, padding: "10px 18px", fontWeight: 600, cursor: "pointer" }}
+          >
+            Limpar preferências salvas e recarregar
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState(undefined); // undefined = carregando, null = deslogado
 
@@ -275,7 +303,11 @@ export default function App() {
 
   if (session === undefined) return <div style={{ minHeight: "100vh", background: "#0F1613" }} />;
   if (!session) return <Auth />;
-  return <Dashboard userId={session.user.id} />;
+  return (
+    <ErrorBoundary>
+      <Dashboard userId={session.user.id} />
+    </ErrorBoundary>
+  );
 }
 
 function Dashboard({ userId }) {
@@ -297,7 +329,10 @@ function Dashboard({ userId }) {
   const [search, setSearch] = useState("");
   const [subView, setSubView] = useState(() => loadLS("subView", "mensal")); // mensal | geral
   const [privacyMode, setPrivacyMode] = useState(() => loadLS("privacyMode", "normal")); // normal | privado | seguro
-  const [geralFiltros, setGeralFiltros] = useState(() => loadLS("geralFiltros", { estabs: [], categorias: [], bancos: [], datas: [], faturas: [] }));
+  const [geralFiltros, setGeralFiltros] = useState(() => ({
+    estabs: [], categorias: [], bancos: [], datas: [], faturas: [],
+    ...loadLS("geralFiltros", {}),
+  }));
   const [geralSort, setGeralSort] = useState(() => loadLS("geralSort", { key: "data", dir: -1 }));
   const hidden = privacyMode !== "normal";
   const seguro = privacyMode === "seguro";
