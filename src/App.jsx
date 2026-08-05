@@ -633,10 +633,14 @@ function Dashboard({ userId }) {
       }
     }
 
-    // Pix no Crédito à vista (valor total = valor/mês): procura pendentes de OUTROS meses
-    // com o mesmo valor exato E o mesmo nome base (sem o "Pix no Crédito -"), pra não juntar
-    // por engano duas pessoas diferentes que coincidentemente cobram o mesmo valor.
-    if (pixCredito && parcelaTotal === 1) {
+    // Pix no Crédito, à vista ou parcelado: procura pendentes de OUTROS meses com o mesmo
+    // valor mensal exato E o mesmo nome base (sem o "Pix no Crédito -"), pra não juntar por
+    // engano duas pessoas diferentes que coincidentemente cobram o mesmo valor.
+    // - À vista: essas pendentes são o próprio pagamento se repetindo — aprova todas juntas.
+    // - Parcelado: a Pluggy manda cada mês como uma pendente solta "1/1" (não sabe que é parcela).
+    //   As parcelas futuras já foram projetadas automaticamente acima, então essas pendentes
+    //   soltas passam a ser redundantes — vão pra lixeira em vez de aprovadas.
+    if (pixCredito) {
       const baseNameAlvo = stripPixPrefix(name).toLowerCase();
       const merchantsAtual = [...merchants.filter((m) => m.id !== merchant.id), mapMerchant(merchant)];
       const candidatos = transactions.filter((t) =>
@@ -649,14 +653,20 @@ function Dashboard({ userId }) {
       );
       if (candidatos.length > 0) {
         const ids = candidatos.map((t) => t.id);
-        const { error: pixErr } = await supabase
-          .from("transactions")
-          .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: 1, parcela_total: 1 })
-          .in("id", ids);
-        if (pixErr) { setError(pixErr.message); return; }
-        setTransactions((prev) => prev.map((t) =>
-          ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1 } : t
-        ));
+        if (parcelaTotal === 1) {
+          const { error: pixErr } = await supabase
+            .from("transactions")
+            .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: 1, parcela_total: 1 })
+            .in("id", ids);
+          if (pixErr) { setError(pixErr.message); return; }
+          setTransactions((prev) => prev.map((t) =>
+            ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1 } : t
+          ));
+        } else {
+          const { error: pixErr } = await supabase.from("transactions").update({ status: "excluida" }).in("id", ids);
+          if (pixErr) { setError(pixErr.message); return; }
+          setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, status: "excluida", statusAnterior: t.status } : t)));
+        }
       }
     }
   };
