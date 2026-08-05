@@ -130,6 +130,46 @@ function looksLikePersonName(text) {
   return true;
 }
 
+function MaskText({ value, active, show, mono, dots = "••••" }) {
+  if (!active) return <>{value}</>;
+  return <span className={mono ? "mask-text mono" : "mask-text"}>{show ? value : dots}</span>;
+}
+
+function RevealButton({ onHoldChange, small }) {
+  const onDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    onHoldChange(true);
+  };
+  const onUp = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onHoldChange(false);
+  };
+  return (
+    <button
+      type="button"
+      className="mask-peek"
+      tabIndex={-1}
+      aria-label="Manter pressionado para ver"
+      onPointerDown={onDown}
+      onPointerUp={onUp}
+      onPointerCancel={onUp}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <Eye size={small ? 11 : 12} />
+    </button>
+  );
+}
+
+// Combina um rótulo fixo com um valor mascarável: no modo seguro, os dois
+// escondem/aparecem juntos; fora dele, só o valor é mascarado (quando hidden).
+function MaskLine({ label, value, hidden, seguro, mono }) {
+  if (seguro) return <Mask value={`${label} ${value}`} active mono={mono} />;
+  return <>{label} <Mask value={value} active={hidden} mono={mono} /></>;
+}
+
 function Mask({ value, active, mono, dots = "••••" }) {
   const [show, setShow] = useState(false);
   if (!active) return <>{value}</>;
@@ -692,7 +732,7 @@ function Dashboard({ userId }) {
       {view === "transacoes" && (
         <div className="subview-tabs">
           <button className={"subtab-btn" + (subView === "mensal" ? " active" : "")} onClick={() => setSubView("mensal")}>Por mês</button>
-          <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Gastos gerais</button>
+          <button className={"subtab-btn" + (subView === "geral" ? " active" : "")} onClick={() => setSubView("geral")}>Total</button>
           {subView === "geral" && (
             <button className="subtab-btn reset-btn" onClick={resetFiltros} title="Limpar filtros, voltar pra ordenação padrão e mês atual">
               <RotateCcw size={12} /> Redefinir
@@ -856,6 +896,7 @@ function Dashboard({ userId }) {
 }
 
 function SortableHead({ sort, setSort, seguro }) {
+  const [revealed, setRevealed] = useState(false);
   const cols = [
     { key: "data", label: "Data" },
     { key: "estabelecimento", label: "Estabelecimento" },
@@ -868,22 +909,23 @@ function SortableHead({ sort, setSort, seguro }) {
     <div className="tx-row tx-row-head">
       {cols.map((c) => (
         <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
-          <Mask value={c.label} active={seguro} />{arrow(c.key)}
+          <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
         </button>
       ))}
       <span className="tx-head-parcela">
-        <span className="tx-head-parcela-title"><Mask value="Parcelamento" active={seguro} /></span>
+        <span className="tx-head-parcela-title"><MaskText value="Parcelamento" active={seguro} show={revealed} /></span>
         <span className="tx-head-parcela-sub">
           <button className="tx-head-subbtn" onClick={() => click("parcelaTotal")} title="Ordenar por quantidade de parcelas">
-            Qtd{arrow("parcelaTotal")}
+            Σ{arrow("parcelaTotal")}
           </button>
           <button className="tx-head-subbtn" onClick={() => click("parcelaAtual")} title="Ordenar por número da parcela atual">
-            Nº{arrow("parcelaAtual")}
+            #{arrow("parcelaAtual")}
           </button>
         </span>
       </span>
-      <button className="tx-head-btn" onClick={() => click("total")}><Mask value="Valor Total" active={seguro} />{arrow("total")}</button>
-      <button className="tx-head-btn" onClick={() => click("mes")}><Mask value="Valor/Mês" active={seguro} />{arrow("mes")}</button>
+      <button className="tx-head-btn" onClick={() => click("total")}><MaskText value="Valor Total" active={seguro} show={revealed} />{arrow("total")}</button>
+      <button className="tx-head-btn" onClick={() => click("mes")}><MaskText value="Valor/Mês" active={seguro} show={revealed} />{arrow("mes")}</button>
+      {seguro ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <span /><span />
     </div>
   );
@@ -1048,10 +1090,10 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
       </div>
 
       <div className="fatura-summary">
-        <span><Mask value="Total da fatura" active={seguro} /> <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></span>
-        <span><Mask value="Qtd. transações" active={seguro} /> <strong>{approved.length}</strong></span>
-        <span><Mask value="Novas transações" active={seguro} /> <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</span>
-        <span><Mask value="Parcelas programadas" active={seguro} /> <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</span>
+        <span>{seguro ? <Mask value={`Total da fatura ${currency(totalFatura)}`} active mono /> : <>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></>}</span>
+        <span>{seguro ? <Mask value={`Qtd. transações ${approved.length}`} active /> : <>Qtd. transações <strong>{approved.length}</strong></>}</span>
+        <span>{seguro ? <Mask value={`Novas transações ${currency(totalNovas)} (${novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</>}</span>
+        <span>{seguro ? <Mask value={`Parcelas programadas ${currency(totalProgramadas)} (${programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</>}</span>
       </div>
 
       {pendingF.length > 0 && (
@@ -1098,6 +1140,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
 function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
+  const [revealed, setRevealed] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
 
@@ -1123,15 +1166,16 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
     <div className="tx-row">
       <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
       <span className="tx-desc" title={seguro ? "" : tx.estabelecimento}>
-        <Mask value={merch?.name || tx.estabelecimento} active={seguro} />
+        <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
       </span>
-      <span className="tx-desc"><Mask value={cat?.name || "—"} active={seguro} /></span>
+      <span className="tx-desc"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
       <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
         {competencia(tx, fechamentosFatura)}
       </span>
       <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
-      <span className="tx-valor"><Mask value={currency(tx.valor * tx.parcelaTotal)} active={hidden} mono /></span>
-      <span className="tx-valor tx-valor-mes"><Mask value={currency(tx.valor)} active={hidden} mono /></span>
+      <span className="tx-valor"><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
+      <span className="tx-valor tx-valor-mes"><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
+      {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
     </div>
@@ -1477,13 +1521,13 @@ function Root() {
       .approval-field-parcela { min-width: 70px; }
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
-      .tx-list { min-width: 740px; }
+      .tx-list { min-width: 760px; }
       .tx-head-parcela { display: flex; flex-direction: column; gap: 2px; }
       .tx-head-parcela-title { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
       .tx-head-parcela-sub { display: flex; gap: 6px; }
       .tx-head-subbtn { background: none; border: none; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
       .tx-head-subbtn:hover { color: var(--text); }
-      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 58px 90px 90px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 58px 90px 90px 24px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
       .tx-row:last-child { border-bottom: none; }
       .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
