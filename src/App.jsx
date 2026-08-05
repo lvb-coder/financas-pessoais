@@ -642,6 +642,7 @@ function Dashboard({ userId }) {
     //   soltas passam a ser redundantes — vão pra lixeira em vez de aprovadas.
     if (pixCredito) {
       const baseNameAlvo = stripPixPrefix(name).toLowerCase();
+      const patternSemPix = pattern.replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
       const merchantsAtual = [...merchants.filter((m) => m.id !== merchant.id), mapMerchant(merchant)];
       const candidatos = transactions.filter((t) =>
         t.id !== tx.id &&
@@ -649,7 +650,11 @@ function Dashboard({ userId }) {
         t.banco === tx.banco && t.tipo === tx.tipo &&
         t.parcelaTotal === 1 &&
         Math.abs(t.valor - valor) < 0.005 &&
-        guessBaseName(t.estabelecimento, merchantsAtual, patterns) === baseNameAlvo
+        (
+          t.estabelecimento.toLowerCase().includes(pattern) ||
+          (patternSemPix && t.estabelecimento.toLowerCase().includes(patternSemPix)) ||
+          guessBaseName(t.estabelecimento, merchantsAtual, patterns) === baseNameAlvo
+        )
       );
       if (candidatos.length > 0) {
         const ids = candidatos.map((t) => t.id);
