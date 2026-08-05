@@ -130,6 +130,21 @@ function looksLikePersonName(text) {
   return true;
 }
 
+// Repete a mesma lógica de sugestão da tela de aprovação, só pra "adivinhar" o nome
+// base (sem "Pix no Crédito -") de um pendente, sem de fato resolver/aprovar ele.
+function guessBaseName(estabelecimento, merchants, patterns) {
+  const patMatch = matchPattern(patterns, estabelecimento);
+  if (patMatch) {
+    const m = merchants.find((mm) => mm.id === patMatch.merchantId);
+    if (m) return stripPixPrefix(m.name).toLowerCase();
+  }
+  const alvo = estabelecimento.toLowerCase();
+  const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
+  if (guess) return stripPixPrefix(guess.name).toLowerCase();
+  const cleaned = stripParcela(estabelecimento).replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
+  return cleaned.toLowerCase();
+}
+
 function MaskText({ value, active, show, mono, dots = "••••" }) {
   if (!active) return <>{value}</>;
   return <span className={mono ? "mask-text mono" : "mask-text"}>{show ? value : dots}</span>;
@@ -619,15 +634,18 @@ function Dashboard({ userId }) {
     }
 
     // Pix no Crédito à vista (valor total = valor/mês): procura pendentes de OUTROS meses
-    // com o mesmo valor exato — o mesmo pagamento tende a se repetir mês a mês com um
-    // texto bruto diferente (nome/registro muda), então o padrão de texto sozinho não pega.
+    // com o mesmo valor exato E o mesmo nome base (sem o "Pix no Crédito -"), pra não juntar
+    // por engano duas pessoas diferentes que coincidentemente cobram o mesmo valor.
     if (pixCredito && parcelaTotal === 1) {
+      const baseNameAlvo = stripPixPrefix(name).toLowerCase();
+      const merchantsAtual = [...merchants.filter((m) => m.id !== merchant.id), mapMerchant(merchant)];
       const candidatos = transactions.filter((t) =>
         t.id !== tx.id &&
         t.status !== "categorizado" && t.status !== "excluida" &&
         t.banco === tx.banco && t.tipo === tx.tipo &&
         t.parcelaTotal === 1 &&
-        Math.abs(t.valor - valor) < 0.005
+        Math.abs(t.valor - valor) < 0.005 &&
+        guessBaseName(t.estabelecimento, merchantsAtual, patterns) === baseNameAlvo
       );
       if (candidatos.length > 0) {
         const ids = candidatos.map((t) => t.id);
