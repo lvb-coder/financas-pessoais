@@ -217,7 +217,7 @@ function matchesSearch(tx, categories, merchants, query) {
 
 // Duas transações "parecidas": mesmo estabelecimento + categoria, valor a até R$5 de diferença
 function isSimilar(a, b) {
-  return a.merchantId && a.merchantId === b.merchantId && a.categoryId === b.categoryId && Math.abs(a.valor - b.valor) <= 5;
+  return a.merchantId && a.merchantId === b.merchantId && a.categoryId === b.categoryId && Math.abs(a.valor - b.valor) <= 1.5;
 }
 
 // Agrupa transações aprovadas (e ainda não revisadas) que parecem duplicadas,
@@ -868,19 +868,23 @@ function Dashboard({ userId }) {
             <p className="empty">Nada na lixeira.</p>
           ) : (
             <div className="tx-list">
-              <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
-                <span>Data</span><span>Estabelecimento</span><span>Total</span><span>Mês</span><span /><span />
-              </div>
               {[...excluidas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
                 const merch = merchants.find((m) => m.id === t.merchantId);
                 return (
-                  <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "52px 1fr 90px 90px 24px 24px" }}>
-                    <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span className="tx-desc"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
-                    <span className="tx-valor"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
-                    <span className="tx-valor tx-valor-mes"><Mask value={currency(t.valor)} active={hidden} mono /></span>
-                    <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
-                    <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
+                  <div key={t.id} className="tx-card">
+                    <div className="tx-card-main">
+                      <span className="tx-date">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                      <span className="tx-card-estab"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                    </div>
+                    <div className="tx-card-meta">
+                      <span className="tx-card-valores">
+                        <Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono />
+                        <span className="of"> / </span>
+                        <Mask value={currency(t.valor)} active={hidden} mono />
+                      </span>
+                      <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
+                      <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
+                    </div>
                   </div>
                 );
               })}
@@ -937,31 +941,35 @@ function SortableHead({ sort, setSort, seguro }) {
     { key: "estabelecimento", label: "Estabelecimento" },
     { key: "categoria", label: "Categoria" },
     { key: "fatura", label: "Fatura" },
+    { key: "total", label: "Valor Total" },
+    { key: "mes", label: "Valor/Mês" },
   ];
   const click = (key) => setSort((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: 1 }));
   const arrow = (key) => (sort.key === key ? (sort.dir === 1 ? " ▲" : " ▼") : "");
+  const clickParcelamento = () => setSort((s) => {
+    if (s.key === "parcelaAtual" && s.dir === 1) return { key: "parcelaAtual", dir: -1 };
+    if (s.key === "parcelaAtual" && s.dir === -1) return { key: "parcelaTotal", dir: 1 };
+    if (s.key === "parcelaTotal" && s.dir === 1) return { key: "parcelaTotal", dir: -1 };
+    return { key: "parcelaAtual", dir: 1 };
+  });
+  const parcelamentoArrow = (sort.key === "parcelaAtual" || sort.key === "parcelaTotal") ? (sort.dir === 1 ? " ▲" : " ▼") : "";
+  const parcelamentoTitle = sort.key === "parcelaTotal" ? "Ordenando por quantidade de parcelas" : "Ordenando por número da parcela atual";
   return (
-    <div className="tx-row tx-row-head">
-      {cols.map((c) => (
+    <div className="tx-head-bar">
+      {cols.slice(0, 4).map((c) => (
         <button key={c.key} className="tx-head-btn" onClick={() => click(c.key)}>
           <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
         </button>
       ))}
-      <span className="tx-head-parcela">
-        <span className="tx-head-parcela-title"><MaskText value="Parcelamento" active={seguro} show={revealed} /></span>
-        <span className="tx-head-parcela-sub">
-          <button className="tx-head-subbtn" onClick={() => click("parcelaTotal")} title="Ordenar por quantidade de parcelas">
-            Σ{arrow("parcelaTotal")}
-          </button>
-          <button className="tx-head-subbtn" onClick={() => click("parcelaAtual")} title="Ordenar por número da parcela atual">
-            #{arrow("parcelaAtual")}
-          </button>
-        </span>
-      </span>
-      <button className="tx-head-btn" onClick={() => click("total")}><MaskText value="Valor Total" active={seguro} show={revealed} />{arrow("total")}</button>
-      <button className="tx-head-btn" onClick={() => click("mes")}><MaskText value="Valor/Mês" active={seguro} show={revealed} />{arrow("mes")}</button>
-      {seguro ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
-      <span /><span />
+      <button className="tx-head-btn" onClick={clickParcelamento} title={parcelamentoTitle}>
+        <MaskText value="Parcelamento" active={seguro} show={revealed} />{parcelamentoArrow}
+      </button>
+      {cols.slice(4).map((c) => (
+        <button key={c.key} className="tx-head-btn tx-head-btn-center" onClick={() => click(c.key)}>
+          <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
+        </button>
+      ))}
+      {seguro && <RevealButton onHoldChange={setRevealed} small />}
     </div>
   );
 }
@@ -1143,14 +1151,11 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
     <section className="bank-group">
       <div className="group-head">
         <h2><Mask value={`${banco} · ${tipo}`} active={seguro} /></h2>
-        <span className="group-total">
-          <Mask value={currency(totalFatura)} active={hidden} mono />
-          {pending.length > 0 && <span className="of"> · {pending.length} pendente(s)</span>}
-        </span>
+        {pending.length > 0 && <span className="group-total of">{pending.length} pendente(s)</span>}
       </div>
 
       <div className="fatura-summary">
-        <span>{seguro ? <Mask value={`Total da fatura ${currency(totalFatura)}`} active mono /> : <>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong></>}</span>
+        <span>{seguro ? <Mask value={`Total da fatura ${currency(totalFatura)} (${approved.length})`} active mono /> : <>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong> ({approved.length})</>}</span>
         <span>{seguro ? <Mask value={`Novas transações ${currency(totalNovas)} (${novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</>}</span>
         <span>{seguro ? <Mask value={`Parcelas programadas ${currency(totalProgramadas)} (${programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</>}</span>
       </div>
@@ -1238,21 +1243,26 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   }
 
   return (
-    <div className="tx-row">
-      <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
-      <span className="tx-desc" title={seguro ? "" : tx.estabelecimento}>
-        <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
-      </span>
-      <span className="tx-desc"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
-      <span className="tx-desc" style={{ fontSize: 11, color: "var(--muted)" }}>
-        {competencia(tx, fechamentosFatura)}
-      </span>
-      <span className="tx-parcela">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
-      <span className="tx-valor"><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
-      <span className="tx-valor tx-valor-mes"><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
-      {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
-      <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
-      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+    <div className="tx-card">
+      <div className="tx-card-main">
+        <span className="tx-date">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}</span>
+        <span className="tx-card-estab" title={seguro ? "" : tx.estabelecimento}>
+          <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
+        </span>
+        <span className="tx-card-cat"><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
+      </div>
+      <div className="tx-card-meta">
+        <span className="of">{competencia(tx, fechamentosFatura)}</span>
+        <span className="of">parc. {tx.parcelaAtual}/{tx.parcelaTotal}</span>
+        <span className="tx-card-valores">
+          <MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono />
+          <span className="of"> / </span>
+          <MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono />
+        </span>
+        {(hidden || seguro) && <RevealButton onHoldChange={setRevealed} small />}
+        <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
+        <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+      </div>
     </div>
   );
 }
@@ -1277,7 +1287,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     const m = merchants.find((mm) => mm.id === t.merchantId);
     if (!m || m.name.trim().toLowerCase() !== nomeCompleto) return false;
     if (t.categoryId !== categoryId) return false;
-    return Math.abs(t.valor - valorMesNum) <= 5;
+    return Math.abs(t.valor - valorMesNum) <= 1.5;
   });
 
   useEffect(() => {
@@ -1389,7 +1399,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         </div>
         <div className="approval-field">
           <label>Valor / mês</label>
-          <input className="tx-input tx-valor-input" type="text" inputMode="decimal" value={valorMes} onChange={(e) => setValorMes(e.target.value)} />
+          <span className="tx-valor-total"><Mask value={currency(valorMesNum)} active={hidden} mono /></span>
         </div>
         <div className="approval-field">
           <label>Total</label>
@@ -1532,7 +1542,7 @@ function Root() {
         --text: #EDEBE4; --muted: #8B9389; --ok: #5FA377; --warn: #C1613D; --gold: #C9A24B; --line: #2A342D;
       }
       body { margin: 0; background: var(--bg); }
-      .app { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', Inter, sans-serif; padding: 28px 20px 60px; max-width: 720px; margin: 0 auto; min-height: 100vh; }
+      .app { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', Inter, sans-serif; padding: 28px 20px 60px; max-width: 720px; margin: 0 auto; min-height: 100vh; overflow-x: hidden; box-sizing: border-box; }
       .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
       .eyebrow { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
       h1 { font-family: 'Fraunces', Georgia, serif; font-size: 28px; margin: 0; font-weight: 600; }
@@ -1568,7 +1578,7 @@ function Root() {
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
       .confirm-btn:disabled { opacity: 0.5; cursor: default; }
-      .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; overflow-x: auto; }
+      .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; }
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
@@ -1576,7 +1586,7 @@ function Root() {
       .tx-subhead-row .tx-subhead { margin: 0; }
       .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
       .multi-filter { position: relative; }
-      .multi-filter-panel { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; min-width: 160px; max-height: 220px; overflow-y: auto; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+      .multi-filter-panel { position: absolute; top: calc(100% + 4px); left: 0; right: auto; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: max-content; min-width: 140px; max-width: min(220px, 80vw); max-height: 220px; overflow-y: auto; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
       .multi-filter-actions { display: flex; justify-content: space-between; padding-bottom: 4px; border-bottom: 1px dashed var(--line); margin-bottom: 4px; }
       .multi-filter-option { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); white-space: nowrap; }
       .filter-select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: var(--muted); font-size: 11px; font-family: inherit; }
@@ -1596,18 +1606,17 @@ function Root() {
       .approval-field-parcela { min-width: 70px; }
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
-      .tx-list { min-width: 760px; }
-      .tx-head-parcela { display: flex; flex-direction: column; gap: 2px; }
-      .tx-head-parcela-title { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
-      .tx-head-parcela-sub { display: flex; gap: 6px; }
-      .tx-head-subbtn { background: none; border: none; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
-      .tx-head-subbtn:hover { color: var(--text); }
-      .tx-row { display: grid; grid-template-columns: 52px 1.4fr 1fr 70px 58px 90px 90px 24px 24px 24px; align-items: center; gap: 6px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
-      .tx-row:last-child { border-bottom: none; }
-      .tx-row-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px; }
-      .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; text-align: left; cursor: pointer; padding: 0; font-family: inherit; }
+      .tx-list { display: grid; gap: 8px; }
+      .tx-head-bar { display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+      .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; cursor: pointer; padding: 0; font-family: inherit; }
+      .tx-head-btn-center { text-align: center; }
       .tx-head-btn:hover { color: var(--text); }
-      .tx-row-pending { background: rgba(201,162,75,0.06); border-radius: 8px; }
+      .tx-card { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; min-width: 0; box-sizing: border-box; }
+      .tx-card-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-width: 0; }
+      .tx-card-estab { font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+      .tx-card-cat { font-size: 12px; color: var(--muted); }
+      .tx-card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+      .tx-card-valores { margin-left: auto; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--text); white-space: nowrap; }
       .tx-date { color: var(--muted); font-family: 'IBM Plex Mono', monospace; }
       .tx-desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tx-row-duplicada { background: rgba(193,97,61,0.08); border-radius: 6px; }
@@ -1627,7 +1636,7 @@ function Root() {
       .search-input { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; color: var(--text); font-size: 13px; font-family: inherit; margin-right: 10px; }
       .search-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; margin-bottom: 18px; }
       .search-results-list { display: grid; gap: 2px; }
-      .search-result-row { display: grid; grid-template-columns: 44px 1.4fr auto auto 80px; align-items: center; gap: 10px; padding: 7px 4px; border-radius: 6px; border: none; background: none; color: var(--text); font-size: 12px; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
+      .search-result-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 7px 4px; border-radius: 6px; border: none; background: none; color: var(--text); font-size: 12px; font-family: inherit; text-align: left; cursor: pointer; width: 100%; }
       .search-result-row:hover { background: var(--surface-2); }
       .tx-valor { font-family: 'IBM Plex Mono', monospace; text-align: right; }
       .tx-valor-mes { font-weight: 600; }
