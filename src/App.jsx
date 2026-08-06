@@ -36,6 +36,12 @@ const DEFAULT_CATEGORIES = [
 const TIPOS = ["Débito", "Crédito"];
 const BANCOS = ["Nubank", "Bradesco", "Itaú"];
 
+// Dicas de categoria pra estabelecimentos que a gente já sabe o que são,
+// usadas só quando não existe estabelecimento/padrão cadastrado ainda.
+const ESTABELECIMENTOS_CONHECIDOS = [
+  { match: /nova primavera/i, categoryName: "Mercado/Farmácia" },
+];
+
 const currency = (v) =>
   (Number(v) || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
@@ -57,10 +63,9 @@ function competencia(tx, fechamentosFatura) {
   return tx.data.slice(0, 7); // nenhum fechamento futuro cadastrado ainda — usa o mês da própria compra
 }
 
-// Antes de aprovar, ainda não existe fatura definida — mostra a transação no mês real da compra.
-// Depois de aprovada, passa a valer a fatura (calculada ou escolhida manualmente).
+// Mostra a transação sempre na fatura calculada (fechamento do banco), pendente ou não —
+// assim o mês em que ela aparece bate com o que o cartão de aprovação mostra.
 function displayMonth(tx, fechamentosFatura) {
-  if (tx.status !== "categorizado") return tx.data.slice(0, 7);
   return competencia(tx, fechamentosFatura);
 }
 
@@ -548,12 +553,21 @@ function Dashboard({ userId }) {
   );
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
-  const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco }) => {
-    const p = parseParcela(estabelecimento);
+  const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco, categoryId, competenciaOverride, parcelaAtual, parcelaTotal }) => {
+    const name = titleCase(estabelecimento.trim());
+    const { data: merchant, error: merchErr } = await supabase
+      .from("merchants")
+      .upsert({ name, category_id: categoryId, user_id: userId }, { onConflict: "name,user_id" })
+      .select()
+      .single();
+    if (merchErr) { setError(merchErr.message); return; }
+    setMerchants((prev) => [...prev.filter((m) => m.id !== merchant.id), mapMerchant(merchant)]);
+
     const row = {
-      data, estabelecimento, valor: parseFloat(valor), tipo, banco, user_id: userId,
-      status: "pendente_estabelecimento", category_id: null, merchant_id: null,
-      parcela_atual: p.atual, parcela_total: p.total,
+      data, estabelecimento: name, valor: parseFloat(valor), tipo, banco, user_id: userId,
+      status: "categorizado", category_id: categoryId, merchant_id: merchant.id,
+      parcela_atual: parcelaAtual, parcela_total: parcelaTotal,
+      competencia_override: competenciaOverride || null,
     };
     const { data: inserted, error } = await supabase.from("transactions").insert(row).select().single();
     if (error) { setError(error.message); return; }
@@ -598,11 +612,10 @@ function Dashboard({ userId }) {
       return t;
     }));
 
-    // Pix no Crédito: ao editar uma parcela já aprovada (data, categoria/estabelecimento ou
-    // número da parcela), propaga a mudança pras outras parcelas da mesma série.
+    // Ao editar uma parcela já aprovada (data, categoria/estabelecimento ou número da parcela),
+    // propaga a mudança pras outras parcelas da mesma série — vale pra qualquer compra parcelada.
     const wasApproved = tx.status === "categorizado";
-    const isPix = /^pix no cr[ée]dito\s*-/i.test(name);
-    if (wasApproved && isPix) {
+    if (wasApproved) {
       const deltaParcela = parcelaAtual - (tx.parcelaAtual || parcelaAtual);
       const siblings = transactions.filter((t) => t.id !== tx.id && (t.origemId || t.id) === origemId);
       for (const s of siblings) {
@@ -661,14 +674,15 @@ function Dashboard({ userId }) {
       }
     }
 
-    // Pix no Crédito, à vista ou parcelado: procura pendentes de OUTROS meses com o mesmo
-    // valor mensal exato E o mesmo nome base (sem o "Pix no Crédito -"), pra não juntar por
-    // engano duas pessoas diferentes que coincidentemente cobram o mesmo valor.
-    // - À vista: essas pendentes são o próprio pagamento se repetindo — aprova todas juntas.
-    // - Parcelado: a Pluggy manda cada mês como uma pendente solta "1/1" (não sabe que é parcela).
-    //   As parcelas futuras já foram projetadas automaticamente acima, então essas pendentes
-    //   soltas passam a ser redundantes — vão pra lixeira em vez de aprovadas.
-    if (pixCredito) {
+    // Compra parcelada (qualquer estabelecimento) OU Pix no Crédito à vista: procura pendentes
+    // de OUTROS meses com o mesmo valor mensal exato E o mesmo nome base (sem o "Pix no
+    // Crédito -"), pra não juntar por engano duas coisas diferentes que coincidentemente
+    // cobram o mesmo valor.
+    // - À vista + Pix: essas pendentes são o próprio pagamento se repetindo — aprova todas juntas.
+    // - Parcelado: alguns bancos mandam cada mês como uma pendente solta "1/1" (não sabem que é
+    //   parcela). As parcelas futuras já foram projetadas automaticamente acima, então essas
+    //   pendentes soltas passam a ser redundantes — vão pra lixeira em vez de aprovadas.
+    if (parcelaTotal > 1 || pixCredito) {
       const baseNameAlvo = stripPixPrefix(name).toLowerCase();
       const patternSemPix = pattern.replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
       const merchantsAtual = [...merchants.filter((m) => m.id !== merchant.id), mapMerchant(merchant)];
@@ -718,17 +732,15 @@ function Dashboard({ userId }) {
     if (tx && tx.status === "categorizado" && tx.merchantId) {
       const merch = merchants.find((m) => m.id === tx.merchantId);
       const isPix = merch && /^pix no cr[ée]dito\s*-/i.test(merch.name);
-      if (isPix) {
-        const origemIdGroup = tx.origemId || tx.id;
-        const relacionadas = transactions.filter((t) =>
-          t.id !== tx.id && t.status !== "excluida" &&
-          (
-            (t.origemId || t.id) === origemIdGroup ||
-            (t.merchantId === tx.merchantId && t.banco === tx.banco && t.tipo === tx.tipo && Math.abs(t.valor - tx.valor) < 0.005)
-          )
-        );
-        ids = [id, ...relacionadas.map((t) => t.id)];
-      }
+      const origemIdGroup = tx.origemId || tx.id;
+      const relacionadas = transactions.filter((t) =>
+        t.id !== tx.id && t.status !== "excluida" &&
+        (
+          (t.origemId || t.id) === origemIdGroup ||
+          (isPix && t.merchantId === tx.merchantId && t.banco === tx.banco && t.tipo === tx.tipo && Math.abs(t.valor - tx.valor) < 0.005)
+        )
+      );
+      if (relacionadas.length > 0) ids = [id, ...relacionadas.map((t) => t.id)];
     }
     const { error } = await supabase.from("transactions").update({ status: "excluida" }).in("id", ids);
     if (error) { setError(error.message); return; }
@@ -1003,7 +1015,7 @@ function Dashboard({ userId }) {
         </section>
       )}
 
-      {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
+      {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} categories={categories} fechamentosFatura={fechamentosFatura} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
       {showSettings && (
         <SettingsModal fechamentosFatura={fechamentosFatura} onSaveFechamento={saveFechamento} onDeleteFechamento={deleteFechamento} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
       )}
@@ -1316,6 +1328,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const [merchantName, setMerchantName] = useState("");
   const [pixCredito, setPixCredito] = useState(false);
   const [categoryId, setCategoryId] = useState(categories[0]?.id);
+  const [banco, setBanco] = useState(tx.banco);
   const [fatura, setFatura] = useState(competencia(tx, fechamentosFatura));
   const [data, setData] = useState(tx.data);
   const parcelaDetectada = parseParcela(tx.estabelecimento);
@@ -1328,7 +1341,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const nomeCompleto = (pixCredito ? `Pix no Crédito - ${merchantName.trim()}` : merchantName.trim()).toLowerCase();
   const possiveisDuplicatas = allTransactions.filter((t) => {
     if (t.id === tx.id || !t.merchantId) return false;
-    if (t.banco !== tx.banco) return false;
+    if (t.banco !== banco) return false;
     if (competencia(t, fechamentosFatura) !== fatura) return false;
     const m = merchants.find((mm) => mm.id === t.merchantId);
     if (!m || m.name.trim().toLowerCase() !== nomeCompleto) return false;
@@ -1365,6 +1378,11 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
       const looksPerson = !isBradesco && looksLikePersonName(cleaned);
       setPixCredito(isPixRaw || looksPerson);
       setMerchantName(titleCase(cleaned));
+      const dica = ESTABELECIMENTOS_CONHECIDOS.find((d) => d.match.test(tx.estabelecimento));
+      if (dica) {
+        const cat = categories.find((c) => c.name === dica.categoryName);
+        if (cat) setCategoryId(cat.id);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1473,38 +1491,75 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   );
 }
 
-function AddRawModal({ tipos, bancos, onClose, onSave }) {
+function AddRawModal({ tipos, bancos, categories, fechamentosFatura, onClose, onSave }) {
   const today = new Date().toISOString().slice(0, 10);
   const [data, setData] = useState(today);
   const [estabelecimento, setEstabelecimento] = useState("");
-  const [valor, setValor] = useState("");
+  const [categoryId, setCategoryId] = useState(categories[0]?.id || "");
   const [tipo, setTipo] = useState(tipos[0]);
   const [banco, setBanco] = useState(bancos[0]);
+  const [fatura, setFatura] = useState(monthKey(new Date()));
+  const [parcelaAtual, setParcelaAtual] = useState(1);
+  const [parcelaTotal, setParcelaTotal] = useState(1);
+  const [valorTotal, setValorTotal] = useState("");
+  const [valorMes, setValorMes] = useState("");
+
+  const onChangeValorTotal = (v) => {
+    setValorTotal(v);
+    const num = parseFloat(v.replace(",", "."));
+    if (!isNaN(num) && parcelaTotal > 0) setValorMes((num / parcelaTotal).toFixed(2).replace(".", ","));
+  };
+  const onChangeValorMes = (v) => {
+    setValorMes(v);
+    const num = parseFloat(v.replace(",", "."));
+    if (!isNaN(num)) setValorTotal((num * parcelaTotal).toFixed(2).replace(".", ","));
+  };
+  const onChangeParcelaTotal = (n) => {
+    setParcelaTotal(n);
+    const mesNum = parseFloat(valorMes.replace(",", "."));
+    if (!isNaN(mesNum)) setValorTotal((mesNum * n).toFixed(2).replace(".", ","));
+  };
 
   const submit = (e) => {
     e.preventDefault();
-    if (!estabelecimento || !valor) return;
-    onSave({ data, estabelecimento, valor: valor.replace(",", "."), tipo, banco });
+    if (!estabelecimento || !valorMes || !categoryId) return;
+    onSave({
+      data, estabelecimento, valor: valorMes.replace(",", "."), tipo, banco,
+      categoryId, competenciaOverride: fatura, parcelaAtual, parcelaTotal,
+    });
   };
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <form className="modal" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <div className="modal-head"><h3>Nova transação</h3><button type="button" onClick={onClose}><X size={18} /></button></div>
-        <p className="modal-hint">No futuro isso chega sozinho via Pluggy — por enquanto, lance manualmente.</p>
         <label>Data<input type="date" value={data} onChange={(e) => setData(e.target.value)} required /></label>
         <label>Estabelecimento<input type="text" placeholder="Ex: IFOOD, SMARTFIT, COELBA" value={estabelecimento} onChange={(e) => setEstabelecimento(e.target.value)} required /></label>
-        <label>Valor (R$)<input type="text" inputMode="decimal" placeholder="0,00" value={valor} onChange={(e) => setValor(e.target.value)} required /></label>
+        <label>Categoria
+          <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
+            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
         <label>Tipo
           <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
             {tipos.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </label>
-        <label>Banco
+        <label>Cartão
           <select value={banco} onChange={(e) => setBanco(e.target.value)}>
             {bancos.map((b) => <option key={b} value={b}>{displayBanco(b)}</option>)}
           </select>
         </label>
+        <label>Fatura<input type="month" value={fatura} onChange={(e) => setFatura(e.target.value)} required /></label>
+        <label>Parcelamento
+          <span className="tx-parcela-edit" style={{ justifyContent: "flex-start" }}>
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaAtual} onFocus={(e) => e.target.select()} onChange={(e) => setParcelaAtual(parseInt(e.target.value) || 1)} />
+            <span>/</span>
+            <input className="tx-parcela-input" type="number" min="1" value={parcelaTotal} onFocus={(e) => e.target.select()} onChange={(e) => onChangeParcelaTotal(parseInt(e.target.value) || 1)} />
+          </span>
+        </label>
+        <label>Valor Total (R$)<input type="text" inputMode="decimal" placeholder="0,00" value={valorTotal} onChange={(e) => onChangeValorTotal(e.target.value)} /></label>
+        <label>Valor / mês (R$)<input type="text" inputMode="decimal" placeholder="0,00" value={valorMes} onChange={(e) => onChangeValorMes(e.target.value)} required /></label>
         <button type="submit" className="submit-btn">Adicionar</button>
       </form>
     </div>
