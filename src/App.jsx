@@ -657,13 +657,14 @@ function Dashboard({ userId }) {
         }));
       }
     }
-    // gera as parcelas futuras que ainda não existem, se for uma compra parcelada.
+    // gera as parcelas que ainda não existem (passadas e futuras), se for uma compra parcelada.
     // Ancoradas na fatura escolhida (2026-07, 2026-08, 2026-09...), e ligadas a ESSA compra
     // específica (origemId) — assim compras diferentes do mesmo estabelecimento não colidem.
     if (parcelaTotal > 1) {
       const faturaBase = competenciaOverride || competencia({ ...tx, data: dataFinal }, fechamentosFatura);
       const faltantes = [];
-      for (let n = parcelaAtual + 1; n <= parcelaTotal; n++) {
+      for (let n = 1; n <= parcelaTotal; n++) {
+        if (n === parcelaAtual) continue;
         const jaExiste = transactions.some((t) =>
           (t.origemId || t.id) === origemId && t.parcelaAtual === n && t.parcelaTotal === parcelaTotal
         );
