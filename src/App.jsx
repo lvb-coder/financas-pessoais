@@ -1666,8 +1666,9 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   // Fatura do Bradesco em PDF: extrai o texto e reconhece linhas no formato
   // "dd/mm Descrição ... valor[,] [-]" — usa dois cartões (só nos importa saber que é Bradesco).
   const parseBradescoPDF = async (file) => {
-    const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/+esm");
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs";
+    const pdfjsMod = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.mjs");
+    const pdfjsLib = pdfjsMod.GlobalWorkerOptions ? pdfjsMod : pdfjsMod.default;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.mjs";
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     let linhasTexto = [];
