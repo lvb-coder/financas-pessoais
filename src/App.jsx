@@ -224,6 +224,23 @@ function displayBanco(b) {
   return b === "Nubank" ? "NuBank" : b;
 }
 
+// Mostra só a pendente mais antiga de cada grupo (mesmo banco/tipo/valor/nome-adivinhado) —
+// evita um card por mês pra compra parcelada que o banco manda solta. Aprovar a que aparece
+// já limpa as escondidas (mesma lógica usada na aprovação).
+function dedupPendentes(list, merchants, patterns) {
+  const ordenada = [...list].sort((a, b) => a.data.localeCompare(b.data));
+  const vistos = new Set();
+  const resultado = [];
+  for (const t of ordenada) {
+    if (t.parcelaTotal > 1) { resultado.push(t); continue; }
+    const chave = `${t.banco}|${t.tipo}|${t.valor.toFixed(2)}|${guessBaseName(t.estabelecimento, merchants, patterns)}`;
+    if (vistos.has(chave)) continue;
+    vistos.add(chave);
+    resultado.push(t);
+  }
+  return resultado;
+}
+
 function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -287,6 +304,7 @@ const mapTransaction = (row) => ({
   competenciaOverride: row.competencia_override, projetada: row.projetada,
   parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
   duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id, conferido: row.conferido,
+  excluidaEm: row.excluida_em,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -711,9 +729,10 @@ function Dashboard({ userId }) {
             ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1 } : t
           ));
         } else {
-          const { error: pixErr } = await supabase.from("transactions").update({ status: "excluida" }).in("id", ids);
+          const agoraAuto = new Date().toISOString();
+          const { error: pixErr } = await supabase.from("transactions").update({ status: "excluida", excluida_em: agoraAuto }).in("id", ids);
           if (pixErr) { setError(pixErr.message); return; }
-          setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, status: "excluida", statusAnterior: t.status } : t)));
+          setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, status: "excluida", statusAnterior: t.status, excluidaEm: agoraAuto } : t)));
         }
       }
     }
@@ -743,17 +762,18 @@ function Dashboard({ userId }) {
       );
       if (relacionadas.length > 0) ids = [id, ...relacionadas.map((t) => t.id)];
     }
-    const { error } = await supabase.from("transactions").update({ status: "excluida" }).in("id", ids);
+    const agora = new Date().toISOString();
+    const { error } = await supabase.from("transactions").update({ status: "excluida", excluida_em: agora }).in("id", ids);
     if (error) { setError(error.message); return; }
-    setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, status: "excluida", statusAnterior: t.status } : t)));
+    setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, status: "excluida", statusAnterior: t.status, excluidaEm: agora } : t)));
   };
 
   const restoreTransaction = async (id) => {
     const tx = transactions.find((t) => t.id === id);
     const novoStatus = tx?.statusAnterior || "pendente_estabelecimento";
-    const { error } = await supabase.from("transactions").update({ status: novoStatus }).eq("id", id);
+    const { error } = await supabase.from("transactions").update({ status: novoStatus, excluida_em: null }).eq("id", id);
     if (error) { setError(error.message); return; }
-    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: novoStatus } : t)));
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, status: novoStatus, excluidaEm: null } : t)));
   };
 
   const purgeTransaction = async (id) => {
@@ -970,17 +990,21 @@ function Dashboard({ userId }) {
             <p className="empty">Nada na lixeira.</p>
           ) : (
             <div className="tx-list">
-              <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 18px 18px" }}>
-                <span>Data</span><span>Estabelecimento</span><span>Valor Total</span><span>Valor/Mês</span><span /><span />
+              <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
+                <span>Data</span><span>Estabelecimento</span><span>Valor Total</span><span>Valor/Mês</span><span>Excluída em</span><span /><span />
               </div>
-              {[...excluidas].sort((a, b) => b.data.localeCompare(a.data)).map((t) => {
+              {[...excluidas].sort((a, b) => (b.excluidaEm || "").localeCompare(a.excluidaEm || "")).map((t) => {
                 const merch = merchants.find((m) => m.id === t.merchantId);
+                const ex = t.excluidaEm ? new Date(t.excluidaEm) : null;
                 return (
-                  <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 18px 18px" }}>
+                  <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
                     <span className="tx-cell">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
                     <span className="tx-cell tx-cell-estab"><Mask value={stripPixPrefix(merch?.name || t.estabelecimento)} active={seguro} /></span>
                     <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
                     <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor)} active={hidden} mono /></span>
+                    <span className="tx-cell" style={{ fontSize: 10 }}>
+                      {ex ? `${String(ex.getDate()).padStart(2, "0")}/${String(ex.getMonth() + 1).padStart(2, "0")}/${String(ex.getFullYear()).slice(2)} ${String(ex.getHours()).padStart(2, "0")}:${String(ex.getMinutes()).padStart(2, "0")}` : "—"}
+                    </span>
                     <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
                     <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
                   </div>
@@ -1117,7 +1141,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
   };
 
   const q = search || "";
-  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)).sort((a, b) => b.data.localeCompare(a.data));
+  const pendingF = dedupPendentes(pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), merchants, patterns).sort((a, b) => b.data.localeCompare(a.data));
 
   const filtrados = all.filter((t) => {
     if (!matchesSearch(t, categories, merchants, q, fechamentosFatura)) return false;
@@ -1201,7 +1225,10 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const approvedGlobal = (allTransactionsGlobal || transactions).filter(
     (t) => t.banco === banco && t.tipo === tipo && t.status === "categorizado"
   );
-  const isProgramada = (t) => t.parcelaAtual > 1 || t.data.slice(0, 7) !== competencia(t, fechamentosFatura);
+  const isProgramada = (t) => {
+    if (t.banco === "Bradesco" && t.parcelaTotal === 1) return false;
+    return t.parcelaAtual > 1 || t.data.slice(0, 7) !== competencia(t, fechamentosFatura);
+  };
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
@@ -1234,7 +1261,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
     });
 
   const q = search || "";
-  const pendingF = pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)).sort((a, b) => b.data.localeCompare(a.data));
+  const pendingF = dedupPendentes(pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), merchants, patterns).sort((a, b) => b.data.localeCompare(a.data));
   const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortNovas);
   const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortProgramadas);
 
