@@ -1573,6 +1573,23 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   );
 }
 
+let pdfjsCarregando = null;
+function carregarPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfjsCarregando) return pdfjsCarregando;
+  pdfjsCarregando = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => reject(new Error("Não consegui carregar a biblioteca de leitura de PDF."));
+    document.head.appendChild(script);
+  });
+  return pdfjsCarregando;
+}
+
 function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, setError }) {
   const [modo, setModo] = useState("pendente"); // "pendente" | "categorizado"
   const [linhas, setLinhas] = useState(null); // null = nada carregado ainda
@@ -1666,9 +1683,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   // Fatura do Bradesco em PDF: extrai o texto e reconhece linhas no formato
   // "dd/mm Descrição ... valor[,] [-]" — usa dois cartões (só nos importa saber que é Bradesco).
   const parseBradescoPDF = async (file) => {
-    const pdfjsMod = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.mjs");
-    const pdfjsLib = pdfjsMod.GlobalWorkerOptions ? pdfjsMod : pdfjsMod.default;
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.mjs";
+    const pdfjsLib = await carregarPdfJs();
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
     let linhasTexto = [];
