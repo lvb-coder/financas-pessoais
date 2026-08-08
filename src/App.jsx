@@ -141,11 +141,11 @@ function guessBaseName(estabelecimento, merchants, patterns) {
   const patMatch = matchPattern(patterns, estabelecimento);
   if (patMatch) {
     const m = merchants.find((mm) => mm.id === patMatch.merchantId);
-    if (m) return stripPixPrefix(m.name).toLowerCase();
+    if (m) return m.name.toLowerCase();
   }
   const alvo = estabelecimento.toLowerCase();
   const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
-  if (guess) return stripPixPrefix(guess.name).toLowerCase();
+  if (guess) return guess.name.toLowerCase();
   const cleaned = stripParcela(estabelecimento).replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
   return cleaned.toLowerCase();
 }
@@ -304,7 +304,7 @@ const mapTransaction = (row) => ({
   competenciaOverride: row.competencia_override, projetada: row.projetada,
   parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
   duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id, conferido: row.conferido,
-  excluidaEm: row.excluida_em,
+  excluidaEm: row.excluida_em, pixCredito: row.pix_credito,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -620,14 +620,14 @@ function Dashboard({ userId }) {
 
     // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura, cartão)
     const origemId = tx.origemId || tx.id;
-    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origem_id: origemId };
+    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origem_id: origemId, pix_credito: !!pixCredito };
     if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
     const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
     if (selfErr) { setError(selfErr.message); return; }
 
     setTransactions((prev) => prev.map((t) => {
       if (t.id === tx.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origemId, ...(competenciaOverride ? { competenciaOverride } : {}) };
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origemId, pixCredito: !!pixCredito, ...(competenciaOverride ? { competenciaOverride } : {}) };
       }
       return t;
     }));
@@ -640,7 +640,7 @@ function Dashboard({ userId }) {
       const siblings = transactions.filter((t) => t.id !== tx.id && (t.origemId || t.id) === origemId);
       for (const s of siblings) {
         const novaParcela = s.parcelaAtual + deltaParcela;
-        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, parcela_atual: novaParcela, data: dataFinal };
+        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, parcela_atual: novaParcela, data: dataFinal, pix_credito: !!pixCredito };
         if (competenciaOverride) upd.competencia_override = addFatura(competenciaOverride, novaParcela - parcelaAtual);
         const { error: sibErr } = await supabase.from("transactions").update(upd).eq("id", s.id);
         if (sibErr) { setError(sibErr.message); }
@@ -651,7 +651,7 @@ function Dashboard({ userId }) {
           if (!s) return t;
           const novaParcela = s.parcelaAtual + deltaParcela;
           return {
-            ...t, categoryId, merchantId: merchant.id, parcelaTotal, parcelaAtual: novaParcela, data: dataFinal,
+            ...t, categoryId, merchantId: merchant.id, parcelaTotal, parcelaAtual: novaParcela, data: dataFinal, pixCredito: !!pixCredito,
             ...(competenciaOverride ? { competenciaOverride: addFatura(competenciaOverride, novaParcela - parcelaAtual) } : {}),
           };
         }));
@@ -685,6 +685,7 @@ function Dashboard({ userId }) {
           parcela_atual: n,
           parcela_total: parcelaTotal,
           origem_id: origemId,
+          pix_credito: !!pixCredito,
           competencia_override: addFatura(faturaBase, n - parcelaAtual),
         }));
         const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
@@ -702,8 +703,7 @@ function Dashboard({ userId }) {
     //   parcela). As parcelas futuras já foram projetadas automaticamente acima, então essas
     //   pendentes soltas passam a ser redundantes — vão pra lixeira em vez de aprovadas.
     if (parcelaTotal > 1 || pixCredito) {
-      const baseNameAlvo = stripPixPrefix(name).toLowerCase();
-      const patternSemPix = pattern.replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
+      const baseNameAlvo = name.toLowerCase();
       const merchantsAtual = [...merchants.filter((m) => m.id !== merchant.id), mapMerchant(merchant)];
       const candidatos = transactions.filter((t) =>
         t.id !== tx.id &&
@@ -713,7 +713,6 @@ function Dashboard({ userId }) {
         Math.abs(t.valor - valor) < 0.005 &&
         (
           t.estabelecimento.toLowerCase().includes(pattern) ||
-          (patternSemPix && t.estabelecimento.toLowerCase().includes(patternSemPix)) ||
           guessBaseName(t.estabelecimento, merchantsAtual, patterns) === baseNameAlvo
         )
       );
@@ -722,11 +721,11 @@ function Dashboard({ userId }) {
         if (parcelaTotal === 1) {
           const { error: pixErr } = await supabase
             .from("transactions")
-            .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: 1, parcela_total: 1 })
+            .update({ status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: 1, parcela_total: 1, pix_credito: !!pixCredito })
             .in("id", ids);
           if (pixErr) { setError(pixErr.message); return; }
           setTransactions((prev) => prev.map((t) =>
-            ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1 } : t
+            ids.includes(t.id) ? { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual: 1, parcelaTotal: 1, pixCredito: !!pixCredito } : t
           ));
         } else {
           const agoraAuto = new Date().toISOString();
@@ -750,8 +749,7 @@ function Dashboard({ userId }) {
     const tx = transactions.find((t) => t.id === id);
     let ids = [id];
     if (tx && tx.status === "categorizado" && tx.merchantId) {
-      const merch = merchants.find((m) => m.id === tx.merchantId);
-      const isPix = merch && /^pix no cr[ée]dito\s*-/i.test(merch.name);
+      const isPix = !!tx.pixCredito;
       const origemIdGroup = tx.origemId || tx.id;
       const relacionadas = transactions.filter((t) =>
         t.id !== tx.id && t.status !== "excluida" &&
@@ -1342,8 +1340,8 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   const [revealed, setRevealed] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
-  const nomeExibido = stripPixPrefix(merch?.name || tx.estabelecimento);
-  const ehPix = merch && /^pix no cr[ée]dito\s*-/i.test(merch.name);
+  const nomeExibido = merch?.name || tx.estabelecimento;
+  const ehPix = !!tx.pixCredito;
 
   if (editing) {
     return (
@@ -1406,14 +1404,14 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
-  const nomeCompleto = (pixCredito ? `Pix no Crédito - ${merchantName.trim()}` : merchantName.trim()).toLowerCase();
   const possiveisDuplicatas = allTransactions.filter((t) => {
     if (t.id === tx.id || !t.merchantId) return false;
     if (t.banco !== banco) return false;
     if (competencia(t, fechamentosFatura) !== fatura) return false;
     const m = merchants.find((mm) => mm.id === t.merchantId);
-    if (!m || m.name.trim().toLowerCase() !== nomeCompleto) return false;
+    if (!m || m.name.trim().toLowerCase() !== merchantName.trim().toLowerCase()) return false;
     if (t.categoryId !== categoryId) return false;
+    if (!!t.pixCredito !== pixCredito) return false;
     return Math.abs(t.valor - valorMesNum) <= 0.5;
   });
 
@@ -1421,26 +1419,32 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     const isBradesco = tx.banco === "Bradesco";
     const isPixRaw = !isBradesco && /^pix no cr[éÃ]©?dito\s*-/i.test(tx.estabelecimento.trim());
 
-    const applyMerchant = (m, cat) => {
-      const hasPrefix = !isBradesco && /^pix no cr[ée]dito\s*-/i.test(m.name);
-      setPixCredito(hasPrefix || isPixRaw);
-      setMerchantName(hasPrefix ? stripPixPrefix(m.name) : m.name);
-      if (cat) setCategoryId(cat);
-    };
-
     if (tx.merchantId) {
       const m = merchants.find((mm) => mm.id === tx.merchantId);
-      if (m) { applyMerchant(m, tx.categoryId || m.categoryId || categories[0]?.id); return; }
+      if (m) {
+        setMerchantName(m.name);
+        setCategoryId(tx.categoryId || m.categoryId || categories[0]?.id);
+        setPixCredito(!!tx.pixCredito); // já aprovada — usa o valor real gravado nela
+        return;
+      }
     }
     const patMatch = matchPattern(patterns, tx.estabelecimento);
     if (patMatch) {
       const m = merchants.find((mm) => mm.id === patMatch.merchantId);
-      if (m) { applyMerchant(m, m.categoryId); return; }
+      if (m) {
+        setMerchantName(m.name);
+        if (m.categoryId) setCategoryId(m.categoryId);
+        // pendente nova: Pix é por transação, não por estabelecimento — não herda do histórico
+        setPixCredito(isPixRaw);
+        return;
+      }
     }
     const alvo = tx.estabelecimento.toLowerCase();
     const guess = merchants.find((m) => alvo.includes(m.name.toLowerCase()));
     if (guess) {
-      applyMerchant(guess, guess.categoryId);
+      setMerchantName(guess.name);
+      if (guess.categoryId) setCategoryId(guess.categoryId);
+      setPixCredito(isPixRaw);
     } else {
       const cleaned = stripParcela(tx.estabelecimento).replace(/^pix no cr[éÃ]©?dito\s*-\s*/i, "").trim();
       const looksPerson = !isBradesco && looksLikePersonName(cleaned);
@@ -1462,9 +1466,8 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   };
 
   const submit = () => {
-    const nomeFinal = pixCredito ? `Pix no Crédito - ${merchantName.trim()}` : merchantName.trim();
     onApprove(tx, {
-      merchantName: nomeFinal, categoryId,
+      merchantName: merchantName.trim(), categoryId,
       competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
       parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito, banco,
     });
@@ -1487,7 +1490,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
                 <div key={d.id} className="duplicate-warning-item">
                   <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
                   <span><Mask value={displayBanco(d.banco)} active={seguro} /></span>
-                  <span><Mask value={stripPixPrefix(dMerch?.name || d.estabelecimento)} active={seguro} /></span>
+                  <span><Mask value={dMerch?.name || d.estabelecimento} active={seguro} /></span>
                   <span><Mask value={dCat?.name || "—"} active={seguro} /></span>
                   <span>{competencia(d, fechamentosFatura)}</span>
                   <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
@@ -1571,6 +1574,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
 }
 
 function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, setError }) {
+  const [modo, setModo] = useState("pendente"); // "pendente" | "categorizado"
   const [linhas, setLinhas] = useState(null); // null = nada carregado ainda
   const [nomeArquivo, setNomeArquivo] = useState("");
   const [erroLeitura, setErroLeitura] = useState("");
@@ -1648,7 +1652,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
         const erros = [];
         if (!data) erros.push("data inválida");
         if (!estabelecimento) erros.push("sem estabelecimento");
-        if (!cat) erros.push(`categoria "${categoriaRaw}" não encontrada`);
+        if (modo === "categorizado" && !cat) erros.push(`categoria "${categoriaRaw}" não encontrada`);
         if (!banco) erros.push(`cartão "${cartaoRaw}" não encontrado`);
         if (!valorMes) erros.push("valor inválido");
         return { linha: i + 2, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual: parc.atual, parcelaTotal: parc.total, valorMes, erros };
@@ -1665,6 +1669,27 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   const confirmar = async () => {
     setImportando(true);
     try {
+      if (modo === "pendente") {
+        // entra cru, igual chegaria da Pluggy — a sugestão de nome/categoria acontece
+        // normalmente quando você for aprovar cada uma
+        const rows = validas.map((l) => ({
+          data: l.data,
+          estabelecimento: l.estabelecimento,
+          valor: l.valorMes,
+          tipo: "Crédito",
+          banco: l.banco,
+          user_id: userId,
+          status: "pendente_estabelecimento",
+          category_id: null,
+          merchant_id: null,
+          parcela_atual: l.parcelaAtual,
+          parcela_total: l.parcelaTotal,
+        }));
+        const { data: inseridas, error } = await supabase.from("transactions").insert(rows).select();
+        if (error) { setError(error.message); setImportando(false); return; }
+        onImported(inseridas || []);
+        return;
+      }
       // resolve/upsert um estabelecimento por vez (nomes distintos), pra pegar o id de cada merchant
       const nomesUnicos = [...new Set(validas.map((l) => titleCase(l.estabelecimento)))];
       const merchantIdPorNome = {};
@@ -1703,7 +1728,15 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>Importar planilha</h3><button onClick={onClose}><X size={18} /></button></div>
-        <p className="modal-hint">Colunas esperadas: Data, Estabelecimento, Categoria, Cartão, Parcelamento (ex: 1/12), Valor Total, Valor por Mês.</p>
+        <div className="import-mode-toggle">
+          <label><input type="radio" checked={modo === "pendente"} onChange={() => { setModo("pendente"); setLinhas(null); }} /> Como pendente (revisar depois, com sugestão automática)</label>
+          <label><input type="radio" checked={modo === "categorizado"} onChange={() => { setModo("categorizado"); setLinhas(null); }} /> Já categorizado (a planilha já tem a categoria certa)</label>
+        </div>
+        <p className="modal-hint">
+          {modo === "pendente"
+            ? "Colunas esperadas: Data, Estabelecimento, Cartão, Parcelamento (ex: 1/12), Valor por Mês (Categoria e Valor Total são ignorados aqui)."
+            : "Colunas esperadas: Data, Estabelecimento, Categoria, Cartão, Parcelamento (ex: 1/12), Valor Total, Valor por Mês."}
+        </p>
         <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
         {erroLeitura && <p style={{ color: "var(--warn)", fontSize: 12 }}>{erroLeitura}</p>}
         {linhas && (
@@ -2013,6 +2046,7 @@ function Root() {
       .modal-head h3 { font-family: 'Fraunces', Georgia, serif; margin: 0; font-size: 18px; }
       .modal-head button { background: none; border: none; color: var(--muted); cursor: pointer; }
       .modal-hint { font-size: 12px; color: var(--muted); margin: 0; }
+      .import-mode-toggle { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
       .import-errors { max-height: 140px; overflow-y: auto; background: rgba(193,97,61,0.08); border: 1px solid var(--warn); border-radius: 8px; padding: 8px; }
       .import-error-row { font-size: 11px; color: var(--warn); padding: 2px 0; }
       .modal label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
