@@ -1352,7 +1352,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
       {showBanco && <span className="tx-cell"><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : nomeExibido}>
         <MaskText value={nomeExibido} active={seguro} show={revealed} />
-        {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix</span>}
+        {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix no Crédito</span>}
       </span>
       <span className="tx-cell" title={seguro ? "" : (cat?.name || "")}><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
       <span className="tx-cell">{competencia(tx, fechamentosFatura)}</span>
