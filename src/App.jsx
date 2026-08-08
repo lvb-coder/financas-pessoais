@@ -286,7 +286,7 @@ const mapTransaction = (row) => ({
   tipo: row.tipo, banco: row.banco, status: row.status, categoryId: row.category_id, merchantId: row.merchant_id,
   competenciaOverride: row.competencia_override, projetada: row.projetada,
   parcelaAtual: row.parcela_atual, parcelaTotal: row.parcela_total, paymentData: row.payment_data,
-  duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id,
+  duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id, conferido: row.conferido,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -577,12 +577,13 @@ function Dashboard({ userId }) {
 
   // Aprova (ou edita) uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez.
   // Funciona tanto pra aprovar uma pendente quanto pra editar uma já aprovada — sem mudar o status nesse segundo caso.
-  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito }) => {
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito, banco }) => {
     const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
     if (!pattern) return;
     const dataFinal = data || tx.data;
+    const bancoFinal = banco || tx.banco;
 
     const { data: merchant, error: merchErr } = await supabase
       .from("merchants")
@@ -598,16 +599,16 @@ function Dashboard({ userId }) {
     if (patErr) { setError(patErr.message); return; }
     setPatterns((prev) => [...prev.filter((p) => p.pattern !== pattern), { pattern, merchantId: merchant.id }]);
 
-    // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura manual)
+    // grava nesta transação específica os valores que você editou (parcela, valor, data, fatura, cartão)
     const origemId = tx.origemId || tx.id;
-    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal, origem_id: origemId };
+    const selfUpdate = { status: "categorizado", category_id: categoryId, merchant_id: merchant.id, parcela_atual: parcelaAtual, parcela_total: parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origem_id: origemId };
     if (competenciaOverride) selfUpdate.competencia_override = competenciaOverride;
     const { error: selfErr } = await supabase.from("transactions").update(selfUpdate).eq("id", tx.id);
     if (selfErr) { setError(selfErr.message); return; }
 
     setTransactions((prev) => prev.map((t) => {
       if (t.id === tx.id) {
-        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, origemId, ...(competenciaOverride ? { competenciaOverride } : {}) };
+        return { ...t, status: "categorizado", categoryId, merchantId: merchant.id, parcelaAtual, parcelaTotal, valor, data: dataFinal, banco: bancoFinal, origemId, ...(competenciaOverride ? { competenciaOverride } : {}) };
       }
       return t;
     }));
@@ -657,7 +658,7 @@ function Dashboard({ userId }) {
           estabelecimento: `${name} ${n}/${parcelaTotal}`,
           valor,
           tipo: tx.tipo,
-          banco: tx.banco,
+          banco: bancoFinal,
           user_id: userId,
           status: "categorizado",
           category_id: categoryId,
@@ -689,7 +690,7 @@ function Dashboard({ userId }) {
       const candidatos = transactions.filter((t) =>
         t.id !== tx.id &&
         t.status !== "categorizado" && t.status !== "excluida" &&
-        t.banco === tx.banco && t.tipo === tx.tipo &&
+        t.banco === bancoFinal && t.tipo === tx.tipo &&
         t.parcelaTotal === 1 &&
         Math.abs(t.valor - valor) < 0.005 &&
         (
@@ -765,6 +766,13 @@ function Dashboard({ userId }) {
     const { error } = await supabase.from("transactions").update({ duplicate_reviewed: true }).in("id", ids);
     if (error) { setError(error.message); return; }
     setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, duplicateReviewed: true } : t)));
+  };
+
+  // Só marca/desmarca — não mexe em mais nada
+  const toggleConferido = async (id, value) => {
+    const { error } = await supabase.from("transactions").update({ conferido: value }).eq("id", id);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, conferido: value } : t)));
   };
 
   const updateLimit = async (id, value) => {
@@ -857,7 +865,7 @@ function Dashboard({ userId }) {
             return (
               <div key={group.map((g) => g.id).join("-")} className="duplicate-group">
                 <div className="duplicate-group-head">
-                  <strong><Mask value={merch?.name} active={seguro} /></strong> <span className="of">· <Mask value={cat?.name} active={seguro} /></span>
+                  <strong><Mask value={stripPixPrefix(merch?.name)} active={seguro} /></strong> <span className="of">· <Mask value={cat?.name} active={seguro} /></span>
                   <button className="ignore-link" onClick={() => markNotDuplicate(group.map((g) => g.id))}>Não são duplicatas</button>
                 </div>
                 {group.map((t) => (
@@ -928,6 +936,7 @@ function Dashboard({ userId }) {
               onIgnore={removeTransaction}
               onRevert={rejectTransaction}
               onRemove={removeTransaction}
+              onToggleConferido={toggleConferido}
             />
           ))}
         </>
@@ -969,7 +978,7 @@ function Dashboard({ userId }) {
                 return (
                   <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 18px 18px" }}>
                     <span className="tx-cell">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                    <span className="tx-cell tx-cell-estab"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                    <span className="tx-cell tx-cell-estab"><Mask value={stripPixPrefix(merch?.name || t.estabelecimento)} active={seguro} /></span>
                     <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
                     <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor)} active={hidden} mono /></span>
                     <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
@@ -1023,10 +1032,11 @@ function Dashboard({ userId }) {
   );
 }
 
-function SortableHead({ sort, setSort, seguro }) {
+function SortableHead({ sort, setSort, seguro, showBanco, showConferido }) {
   const [revealed, setRevealed] = useState(false);
   const cols = [
     { key: "data", label: "Data" },
+    ...(showBanco ? [{ key: "banco", label: "Cartão" }] : []),
     { key: "estabelecimento", label: "Estabelecimento" },
     { key: "categoria", label: "Categoria" },
     { key: "fatura", label: "Fatura" },
@@ -1042,7 +1052,7 @@ function SortableHead({ sort, setSort, seguro }) {
   const parcelamentoArrow = (sort.key === "parcelaAtual" || sort.key === "parcelaTotal") ? (sort.dir === 1 ? " ▲" : " ▼") : "";
   const parcelamentoTitle = sort.key === "parcelaTotal" ? "Ordenando por quantidade de parcelas" : "Ordenando por número da parcela atual";
   return (
-    <div className="tx-row tx-row-head">
+    <div className={"tx-row tx-row-head" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")}>
       {cols.map((c) => (
         <button key={c.key} className={"tx-head-btn" + (c.key === "estabelecimento" ? " tx-head-btn-left" : "")} onClick={() => click(c.key)}>
           <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
@@ -1055,6 +1065,7 @@ function SortableHead({ sort, setSort, seguro }) {
       <button className="tx-head-btn" onClick={() => click("mes")}><MaskText value="Valor/Mês" active={seguro} show={revealed} />{arrow("mes")}</button>
       {seguro ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <span /><span />
+      {showConferido && <span title="Já conferido">✓</span>}
     </div>
   );
 }
@@ -1170,9 +1181,9 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
         pendingF.length === 0 && <p className="empty">Nada encontrado.</p>
       ) : (
         <div className="tx-list">
-          <SortableHead sort={sort} setSort={setSort} seguro={seguro} />
+          <SortableHead sort={sort} setSort={setSort} seguro={seguro} showBanco />
           {ordenados.map((t) => (
-            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showYear onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showYear showBanco onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
           ))}
         </div>
       )}
@@ -1180,7 +1191,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove }) {
+function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido }) {
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -1255,9 +1266,9 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
         <>
           <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
           <div className="tx-list">
-            <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} />
+            <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} showConferido />
             {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -1267,9 +1278,9 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
         <>
           <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
           <div className="tx-list">
-            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} />
+            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} showConferido />
             {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
           </div>
         </>
@@ -1282,11 +1293,13 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, showBanco, showConferido, onToggleConferido, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
+  const nomeExibido = stripPixPrefix(merch?.name || tx.estabelecimento);
+  const ehPix = merch && /^pix no cr[ée]dito\s*-/i.test(merch.name);
 
   if (editing) {
     return (
@@ -1307,10 +1320,12 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   }
 
   return (
-    <div className="tx-row">
+    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")}>
       <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
-      <span className="tx-cell tx-cell-estab" title={seguro ? "" : (merch?.name || tx.estabelecimento)}>
-        <MaskText value={merch?.name || tx.estabelecimento} active={seguro} show={revealed} />
+      {showBanco && <span className="tx-cell"><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
+      <span className="tx-cell tx-cell-estab" title={seguro ? "" : nomeExibido}>
+        <MaskText value={nomeExibido} active={seguro} show={revealed} />
+        {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix</span>}
       </span>
       <span className="tx-cell" title={seguro ? "" : (cat?.name || "")}><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
       <span className="tx-cell">{competencia(tx, fechamentosFatura)}</span>
@@ -1320,6 +1335,15 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
       {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+      {showConferido && (
+        <input
+          type="checkbox"
+          className="conferido-check"
+          checked={!!tx.conferido}
+          onChange={(e) => onToggleConferido(tx.id, e.target.checked)}
+          title="Já conferi com a fatura original"
+        />
+      )}
     </div>
   );
 }
@@ -1398,7 +1422,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
     onApprove(tx, {
       merchantName: nomeFinal, categoryId,
       competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
-      parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito,
+      parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito, banco,
     });
   };
 
@@ -1412,15 +1436,22 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
             <button className="ignore-link" onClick={() => onIgnore(tx.id)}>Excluir transação pendente</button>
           </div>
           <div className="duplicate-warning-list">
-            {possiveisDuplicatas.map((d) => (
-              <div key={d.id} className="duplicate-warning-item">
-                <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
-                <span><Mask value={merchants.find((m) => m.id === d.merchantId)?.name || d.estabelecimento} active={seguro} /></span>
-                <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
-                <span className="tx-valor-total"><Mask value={currency(d.valor * d.parcelaTotal)} active={hidden} mono /></span>
-                <span className="tx-valor-total"><Mask value={currency(d.valor)} active={hidden} mono /></span>
-              </div>
-            ))}
+            {possiveisDuplicatas.map((d) => {
+              const dMerch = merchants.find((m) => m.id === d.merchantId);
+              const dCat = categories.find((c) => c.id === d.categoryId);
+              return (
+                <div key={d.id} className="duplicate-warning-item">
+                  <span className="tx-date">{d.data.slice(8, 10)}/{d.data.slice(5, 7)}</span>
+                  <span><Mask value={displayBanco(d.banco)} active={seguro} /></span>
+                  <span><Mask value={stripPixPrefix(dMerch?.name || d.estabelecimento)} active={seguro} /></span>
+                  <span><Mask value={dCat?.name || "—"} active={seguro} /></span>
+                  <span>{competencia(d, fechamentosFatura)}</span>
+                  <span>parc. {d.parcelaAtual}/{d.parcelaTotal}</span>
+                  <span className="tx-valor-total"><Mask value={currency(d.valor * d.parcelaTotal)} active={hidden} mono /></span>
+                  <span className="tx-valor-total"><Mask value={currency(d.valor)} active={hidden} mono /></span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -1438,7 +1469,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
               paymentData: {JSON.stringify(tx.paymentData)}
             </span>
           )}
-          {tx.banco !== "Bradesco" && (
+          {banco !== "Bradesco" && (
             <label className="checkbox" style={{ marginTop: 3 }}>
               <input type="checkbox" checked={pixCredito} onChange={(e) => setPixCredito(e.target.checked)} />
               Pix no Crédito
@@ -1453,6 +1484,12 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         </div>
       </div>
       <div className="approval-bottom">
+        <div className="approval-field">
+          <label>Cartão</label>
+          <select className="tx-input" value={banco} onChange={(e) => setBanco(e.target.value)}>
+            {BANCOS.filter((b) => b !== "Itaú").map((b) => <option key={b} value={b}>{displayBanco(b)}</option>)}
+          </select>
+        </div>
         <div className="approval-field">
           <label>Fatura</label>
           <input className="tx-input" type="month" value={fatura} onChange={(e) => setFatura(e.target.value)} title="Fatura em que essa transação será lançada" />
@@ -1702,7 +1739,7 @@ function Root() {
       .duplicate-warning { background: rgba(193,97,61,0.15); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--warn); }
       .duplicate-warning-head { display: flex; align-items: center; gap: 8px; }
       .duplicate-warning-list { display: grid; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--warn); }
-      .duplicate-warning-item { display: grid; grid-template-columns: 44px 1.4fr 60px 70px 70px; align-items: center; gap: 8px; font-size: 11px; color: var(--text); }
+      .duplicate-warning-item { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 11px; color: var(--text); padding: 3px 0; }
       .approval-top { display: flex; gap: 10px; align-items: flex-start; }
       .approval-bottom { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
@@ -1713,6 +1750,10 @@ function Root() {
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
       .tx-list { display: grid; gap: 2px; }
       .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; }
+      .tx-row-banco { grid-template-columns: 58px 64px 1.4fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; }
+      .tx-row-conferido { grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px 20px; }
+      .conferido-check { width: 15px; height: 15px; cursor: pointer; justify-self: center; }
+      .pix-badge { font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; background: rgba(201,162,75,0.18); color: var(--gold); border-radius: 4px; padding: 1px 4px; margin-left: 5px; vertical-align: middle; }
       .tx-row-head { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 2px; }
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-cell-estab { font-weight: 500; text-align: left; }
