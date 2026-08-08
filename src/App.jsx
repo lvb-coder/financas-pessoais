@@ -914,7 +914,7 @@ function Dashboard({ userId }) {
           <input className="search-input" type="text" placeholder="Buscar por estabelecimento ou valor…" value={search} onChange={(e) => setSearch(e.target.value)} />
         ) : <span />}
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> <Mask value="Nova transação" active={seguro} /></button>
-        <button className="add-btn" onClick={() => setShowImport(true)} style={{ marginLeft: 8 }}><Plus size={16} /> <Mask value="Importar planilha" active={seguro} /></button>
+        <button className="add-btn" onClick={() => setShowImport(true)} style={{ marginLeft: 8 }}><Plus size={16} /> <Mask value="Importar fatura" active={seguro} /></button>
       </div>
 
       {view === "transacoes" && (
@@ -1627,40 +1627,134 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     return categories.find((c) => norm(c.name) === s) || null;
   };
 
+  const montarLinha = (i, { data, estabelecimento, banco, parcelaAtual, parcelaTotal, valorMes, categoriaRaw }) => {
+    const cat = categoriaRaw ? acharCategoria(categoriaRaw) : null;
+    const erros = [];
+    if (!data) erros.push("data inválida");
+    if (!estabelecimento) erros.push("sem estabelecimento");
+    if (modo === "categorizado" && !cat) erros.push(`categoria "${categoriaRaw || ""}" não encontrada`);
+    if (!banco) erros.push(`cartão não encontrado`);
+    if (!valorMes) erros.push("valor inválido");
+    return { linha: i, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual, parcelaTotal, valorMes, erros };
+  };
+
+  // Fatura da Nubank exportada em CSV (colunas: date, title, amount).
+  // "Pagamento recebido" não é transação (é a quitação da fatura); "Crédito de "X"" é estorno
+  // (o valor já vem negativo); "X - Parcela N/M" tem o parcelamento embutido no texto.
+  const parseNubankCSV = async (file) => {
+    const Papa = await import("https://cdn.jsdelivr.net/npm/papaparse@5.4.1/+esm");
+    const text = await file.text();
+    const { data: registros } = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+    const linhas = [];
+    let i = 2;
+    for (const r of registros) {
+      const desc = (r.title || "").trim();
+      if (!desc || /^pagamento recebido$/i.test(desc)) { i++; continue; }
+      let estabelecimento = desc;
+      const credMatch = desc.match(/^cr[ée]dito de\s*"?(.+?)"?$/i);
+      if (credMatch) estabelecimento = credMatch[1];
+      let parcelaAtual = 1, parcelaTotal = 1;
+      const parcMatch = estabelecimento.match(/^(.*?)\s*-\s*parcela\s*(\d+)\/(\d+)\s*$/i);
+      if (parcMatch) { estabelecimento = parcMatch[1].trim(); parcelaAtual = parseInt(parcMatch[2], 10); parcelaTotal = parseInt(parcMatch[3], 10); }
+      const valorMes = parseValorCampo(r.amount);
+      linhas.push(montarLinha(i, { data: parseDataCampo(r.date), estabelecimento, banco: "Nubank", parcelaAtual, parcelaTotal, valorMes }));
+      i++;
+    }
+    return linhas;
+  };
+
+  // Fatura do Bradesco em PDF: extrai o texto e reconhece linhas no formato
+  // "dd/mm Descrição ... valor[,] [-]" — usa dois cartões (só nos importa saber que é Bradesco).
+  const parseBradescoPDF = async (file) => {
+    const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/+esm");
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs";
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    let linhasTexto = [];
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      // agrupa por posição vertical (y) pra reconstruir as linhas da tabela
+      const porLinha = {};
+      for (const item of content.items) {
+        const y = Math.round(item.transform[5]);
+        if (!porLinha[y]) porLinha[y] = [];
+        porLinha[y].push(item);
+      }
+      const ys = Object.keys(porLinha).map(Number).sort((a, b) => b - a);
+      for (const y of ys) {
+        const texto = porLinha[y].sort((a, b) => a.transform[4] - b.transform[4]).map((it) => it.str).join(" ").replace(/\s+/g, " ").trim();
+        if (texto) linhasTexto.push(texto);
+      }
+    }
+    const linhas = [];
+    let i = 2;
+    const anoAtual = new Date().getFullYear();
+    for (const texto of linhasTexto) {
+      const m = texto.match(/^(\d{2})\/(\d{2})\s+(.+?)\s+([\d.,]+)\s*(-)?\s*$/);
+      if (!m) continue;
+      const [, dd, mm, meio, valorStr] = m;
+      const negativo = !!m[5];
+      if (/pagto\.?\s*por\s*deb/i.test(meio) || /pagamento recebido/i.test(meio)) { continue; }
+      if (/^n[uú]mero do cart[ãa]o/i.test(meio) || /^total (para|da fatura)/i.test(meio)) continue;
+      // tira a cidade do final (normalmente 1-3 palavras em maiúsculas antes do valor) — fica como veio se não der pra separar
+      let estabelecimento = meio.replace(/\s+(RIO DE JANEIR[O]?|SAO PAULO|S[ÃA]O PAULO|SO PAULO|[A-ZÀ-Ú.]{3,20})$/u, "").trim() || meio;
+      const parcMatch = estabelecimento.match(/^(.*?)\s+(\d{1,2})\/(\d{1,2})$/);
+      let parcelaAtual = 1, parcelaTotal = 1;
+      if (parcMatch && parseInt(parcMatch[3], 10) > 1) { estabelecimento = parcMatch[1].trim(); parcelaAtual = parseInt(parcMatch[2], 10); parcelaTotal = parseInt(parcMatch[3], 10); }
+      const valorNum = parseValorCampo(valorStr) * (negativo ? -1 : 1);
+      // sem o ano explícito na fatura — assume o ano corrente; ajuste manual se cair em dez/jan de virada
+      const data = `${anoAtual}-${mm}-${dd}`;
+      linhas.push(montarLinha(i, { data, estabelecimento, banco: "Bradesco", parcelaAtual, parcelaTotal, valorMes: valorNum }));
+      i++;
+    }
+    return linhas;
+  };
+
   const handleFile = async (file) => {
     setErroLeitura("");
     setNomeArquivo(file.name);
     try {
-      const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array", cellDates: true });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      const processadas = rows.map((row, i) => {
-        const data = parseDataCampo(acharCampo(row, "data"));
-        const estabelecimento = (acharCampo(row, "estabelecimento") || "").toString().trim();
-        const categoriaRaw = acharCampo(row, "categoria");
-        const cat = acharCategoria(categoriaRaw);
-        const cartaoRaw = acharCampo(row, "cartão", "cartao");
-        const banco = acharBanco(cartaoRaw);
-        const parc = parseParcelamentoCampo(acharCampo(row, "parcelamento"));
-        const valorTotalRaw = acharCampo(row, "valor total");
-        const valorMesRaw = acharCampo(row, "valor por mês", "valor por mes", "valor/mês", "valor mês");
-        let valorMes = parseValorCampo(valorMesRaw);
-        const valorTotal = parseValorCampo(valorTotalRaw);
-        if (!valorMes && valorTotal) valorMes = valorTotal / (parc.total || 1);
-        const erros = [];
-        if (!data) erros.push("data inválida");
-        if (!estabelecimento) erros.push("sem estabelecimento");
-        if (modo === "categorizado" && !cat) erros.push(`categoria "${categoriaRaw}" não encontrada`);
-        if (!banco) erros.push(`cartão "${cartaoRaw}" não encontrado`);
-        if (!valorMes) erros.push("valor inválido");
-        return { linha: i + 2, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual: parc.atual, parcelaTotal: parc.total, valorMes, erros };
-      });
+      const ext = file.name.split(".").pop().toLowerCase();
+      let processadas;
+      if (ext === "pdf") {
+        processadas = await parseBradescoPDF(file);
+      } else if (ext === "csv") {
+        const inicio = (await file.slice(0, 200).text()).toLowerCase();
+        if (inicio.includes("date") && inicio.includes("title") && inicio.includes("amount")) {
+          processadas = await parseNubankCSV(file);
+        } else {
+          processadas = await parseGenericSheet(file);
+        }
+      } else {
+        processadas = await parseGenericSheet(file);
+      }
       setLinhas(processadas);
     } catch (e) {
       setErroLeitura("Não consegui ler esse arquivo: " + e.message);
     }
+  };
+
+  const parseGenericSheet = async (file) => {
+    const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array", cellDates: true });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+    return rows.map((row, i) => {
+      const data = parseDataCampo(acharCampo(row, "data"));
+      const estabelecimento = (acharCampo(row, "estabelecimento") || "").toString().trim();
+      const categoriaRaw = acharCampo(row, "categoria");
+      const cartaoRaw = acharCampo(row, "cartão", "cartao");
+      const banco = acharBanco(cartaoRaw);
+      const parc = parseParcelamentoCampo(acharCampo(row, "parcelamento"));
+      const valorTotalRaw = acharCampo(row, "valor total");
+      const valorMesRaw = acharCampo(row, "valor por mês", "valor por mes", "valor/mês", "valor mês");
+      let valorMes = parseValorCampo(valorMesRaw);
+      const valorTotal = parseValorCampo(valorTotalRaw);
+      if (!valorMes && valorTotal) valorMes = valorTotal / (parc.total || 1);
+      return montarLinha(i + 2, { data, estabelecimento, banco, parcelaAtual: parc.atual, parcelaTotal: parc.total, valorMes, categoriaRaw });
+    });
   };
 
   const validas = (linhas || []).filter((l) => l.erros.length === 0);
@@ -1727,17 +1821,20 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><h3>Importar planilha</h3><button onClick={onClose}><X size={18} /></button></div>
+        <div className="modal-head"><h3>Importar fatura</h3><button onClick={onClose}><X size={18} /></button></div>
         <div className="import-mode-toggle">
           <label><input type="radio" checked={modo === "pendente"} onChange={() => { setModo("pendente"); setLinhas(null); }} /> Como pendente (revisar depois, com sugestão automática)</label>
           <label><input type="radio" checked={modo === "categorizado"} onChange={() => { setModo("categorizado"); setLinhas(null); }} /> Já categorizado (a planilha já tem a categoria certa)</label>
         </div>
         <p className="modal-hint">
-          {modo === "pendente"
-            ? "Colunas esperadas: Data, Estabelecimento, Cartão, Parcelamento (ex: 1/12), Valor por Mês (Categoria e Valor Total são ignorados aqui)."
-            : "Colunas esperadas: Data, Estabelecimento, Categoria, Cartão, Parcelamento (ex: 1/12), Valor Total, Valor por Mês."}
+          Reconhece direto: fatura em <strong>PDF do Bradesco</strong>, extrato em <strong>CSV da Nubank</strong> (exportado pelo app do banco), ou planilha própria.
         </p>
-        <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
+        <p className="modal-hint">
+          {modo === "pendente"
+            ? "Planilha própria — colunas esperadas: Data, Estabelecimento, Cartão, Parcelamento (ex: 1/12), Valor por Mês (Categoria e Valor Total são ignorados aqui)."
+            : "Planilha própria — colunas esperadas: Data, Estabelecimento, Categoria, Cartão, Parcelamento (ex: 1/12), Valor Total, Valor por Mês."}
+        </p>
+        <input type="file" accept=".xlsx,.xls,.csv,.pdf" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
         {erroLeitura && <p style={{ color: "var(--warn)", fontSize: 12 }}>{erroLeitura}</p>}
         {linhas && (
           <>
