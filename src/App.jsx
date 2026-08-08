@@ -377,6 +377,7 @@ function Dashboard({ userId }) {
   const [fechamentosFatura, setFechamentosFatura] = useState([]);
   const [cursor, setCursor] = useState(new Date());
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
   const [connecting, setConnecting] = useState(false);
@@ -639,8 +640,7 @@ function Dashboard({ userId }) {
       const siblings = transactions.filter((t) => t.id !== tx.id && (t.origemId || t.id) === origemId);
       for (const s of siblings) {
         const novaParcela = s.parcelaAtual + deltaParcela;
-        const novaData = deltaParcela !== 0 ? addMonths(dataFinal, novaParcela - parcelaAtual) : s.data;
-        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, parcela_atual: novaParcela, data: novaData };
+        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, parcela_atual: novaParcela, data: dataFinal };
         if (competenciaOverride) upd.competencia_override = addFatura(competenciaOverride, novaParcela - parcelaAtual);
         const { error: sibErr } = await supabase.from("transactions").update(upd).eq("id", s.id);
         if (sibErr) { setError(sibErr.message); }
@@ -650,9 +650,8 @@ function Dashboard({ userId }) {
           const s = siblings.find((x) => x.id === t.id);
           if (!s) return t;
           const novaParcela = s.parcelaAtual + deltaParcela;
-          const novaData = deltaParcela !== 0 ? addMonths(dataFinal, novaParcela - parcelaAtual) : s.data;
           return {
-            ...t, categoryId, merchantId: merchant.id, parcelaTotal, parcelaAtual: novaParcela, data: novaData,
+            ...t, categoryId, merchantId: merchant.id, parcelaTotal, parcelaAtual: novaParcela, data: dataFinal,
             ...(competenciaOverride ? { competenciaOverride: addFatura(competenciaOverride, novaParcela - parcelaAtual) } : {}),
           };
         }));
@@ -672,7 +671,7 @@ function Dashboard({ userId }) {
       }
       if (faltantes.length > 0) {
         const rows = faltantes.map((n) => ({
-          data: addMonths(dataFinal, n - parcelaAtual),
+          data: dataFinal,
           estabelecimento: `${name} ${n}/${parcelaTotal}`,
           valor,
           tipo: tx.tipo,
@@ -916,6 +915,7 @@ function Dashboard({ userId }) {
           <input className="search-input" type="text" placeholder="Buscar por estabelecimento ou valor…" value={search} onChange={(e) => setSearch(e.target.value)} />
         ) : <span />}
         <button className="add-btn" onClick={() => setShowAdd(true)}><Plus size={16} /> <Mask value="Nova transação" active={seguro} /></button>
+        <button className="add-btn" onClick={() => setShowImport(true)} style={{ marginLeft: 8 }}><Plus size={16} /> <Mask value="Importar planilha" active={seguro} /></button>
       </div>
 
       {view === "transacoes" && (
@@ -1049,6 +1049,22 @@ function Dashboard({ userId }) {
       )}
 
       {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} categories={categories} fechamentosFatura={fechamentosFatura} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
+      {showImport && (
+        <ImportModal
+          categories={categories}
+          bancos={BANCOS.filter((b) => b !== "Itaú")}
+          tipos={TIPOS}
+          userId={userId}
+          setError={setError}
+          onClose={() => setShowImport(false)}
+          onImported={async (inseridas) => {
+            setTransactions((prev) => [...inseridas.map(mapTransaction), ...prev]);
+            const { data: merch } = await supabase.from("merchants").select("*").order("name");
+            if (merch) setMerchants(merch.map(mapMerchant));
+            setShowImport(false);
+          }}
+        />
+      )}
       {showSettings && (
         <SettingsModal fechamentosFatura={fechamentosFatura} onSaveFechamento={saveFechamento} onDeleteFechamento={deleteFechamento} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
       )}
@@ -1513,9 +1529,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
       <div className="approval-bottom">
         <div className="approval-field">
           <label>Cartão</label>
-          <select className="tx-input" value={banco} onChange={(e) => setBanco(e.target.value)}>
-            {BANCOS.filter((b) => b !== "Itaú").map((b) => <option key={b} value={b}>{displayBanco(b)}</option>)}
-          </select>
+          <span className="tx-valor-total">{displayBanco(banco)}</span>
         </div>
         <div className="approval-field">
           <label>Fatura</label>
@@ -1550,6 +1564,164 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
             <button className="ledger-remove" onClick={() => onIgnore(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, setError }) {
+  const [linhas, setLinhas] = useState(null); // null = nada carregado ainda
+  const [nomeArquivo, setNomeArquivo] = useState("");
+  const [erroLeitura, setErroLeitura] = useState("");
+  const [importando, setImportando] = useState(false);
+
+  const norm = (s) => (s || "").toString().trim().toLowerCase();
+
+  const acharCampo = (row, ...nomes) => {
+    for (const key of Object.keys(row)) {
+      if (nomes.includes(norm(key))) return row[key];
+    }
+    return "";
+  };
+
+  const parseParcelamentoCampo = (v) => {
+    const s = (v || "").toString().trim();
+    const m = s.match(/(\d+)\s*\/\s*(\d+)/);
+    if (m) return { atual: parseInt(m[1], 10), total: parseInt(m[2], 10) };
+    const n = parseInt(s, 10);
+    if (n > 1) return { atual: 1, total: n };
+    return { atual: 1, total: 1 };
+  };
+
+  const parseValorCampo = (v) => {
+    if (typeof v === "number") return v;
+    const s = (v || "").toString().replace(/[R$\s]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".");
+    return parseFloat(s) || 0;
+  };
+
+  const parseDataCampo = (v) => {
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    const s = (v || "").toString().trim();
+    const br = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+    if (br) {
+      const [, d, m, y] = br;
+      const ano = y.length === 2 ? `20${y}` : y;
+      return `${ano}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return "";
+  };
+
+  const acharBanco = (v) => {
+    const s = norm(v);
+    return bancos.find((b) => norm(displayBanco(b)) === s || norm(b) === s) || null;
+  };
+
+  const acharCategoria = (v) => {
+    const s = norm(v);
+    return categories.find((c) => norm(c.name) === s) || null;
+  };
+
+  const handleFile = async (file) => {
+    setErroLeitura("");
+    setNomeArquivo(file.name);
+    try {
+      const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array", cellDates: true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const processadas = rows.map((row, i) => {
+        const data = parseDataCampo(acharCampo(row, "data"));
+        const estabelecimento = (acharCampo(row, "estabelecimento") || "").toString().trim();
+        const categoriaRaw = acharCampo(row, "categoria");
+        const cat = acharCategoria(categoriaRaw);
+        const cartaoRaw = acharCampo(row, "cartão", "cartao");
+        const banco = acharBanco(cartaoRaw);
+        const parc = parseParcelamentoCampo(acharCampo(row, "parcelamento"));
+        const valorTotalRaw = acharCampo(row, "valor total");
+        const valorMesRaw = acharCampo(row, "valor por mês", "valor por mes", "valor/mês", "valor mês");
+        let valorMes = parseValorCampo(valorMesRaw);
+        const valorTotal = parseValorCampo(valorTotalRaw);
+        if (!valorMes && valorTotal) valorMes = valorTotal / (parc.total || 1);
+        const erros = [];
+        if (!data) erros.push("data inválida");
+        if (!estabelecimento) erros.push("sem estabelecimento");
+        if (!cat) erros.push(`categoria "${categoriaRaw}" não encontrada`);
+        if (!banco) erros.push(`cartão "${cartaoRaw}" não encontrado`);
+        if (!valorMes) erros.push("valor inválido");
+        return { linha: i + 2, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual: parc.atual, parcelaTotal: parc.total, valorMes, erros };
+      });
+      setLinhas(processadas);
+    } catch (e) {
+      setErroLeitura("Não consegui ler esse arquivo: " + e.message);
+    }
+  };
+
+  const validas = (linhas || []).filter((l) => l.erros.length === 0);
+  const invalidas = (linhas || []).filter((l) => l.erros.length > 0);
+
+  const confirmar = async () => {
+    setImportando(true);
+    try {
+      // resolve/upsert um estabelecimento por vez (nomes distintos), pra pegar o id de cada merchant
+      const nomesUnicos = [...new Set(validas.map((l) => titleCase(l.estabelecimento)))];
+      const merchantIdPorNome = {};
+      for (const nome of nomesUnicos) {
+        const catId = validas.find((l) => titleCase(l.estabelecimento) === nome)?.categoryId;
+        const { data: m, error: mErr } = await supabase
+          .from("merchants")
+          .upsert({ name: nome, category_id: catId, user_id: userId }, { onConflict: "name,user_id" })
+          .select()
+          .single();
+        if (mErr) { setError(mErr.message); setImportando(false); return; }
+        merchantIdPorNome[nome] = m.id;
+      }
+      const rows = validas.map((l) => ({
+        data: l.data,
+        estabelecimento: titleCase(l.estabelecimento),
+        valor: l.valorMes,
+        tipo: "Crédito",
+        banco: l.banco,
+        user_id: userId,
+        status: "categorizado",
+        category_id: l.categoryId,
+        merchant_id: merchantIdPorNome[titleCase(l.estabelecimento)],
+        parcela_atual: l.parcelaAtual,
+        parcela_total: l.parcelaTotal,
+      }));
+      const { data: inseridas, error } = await supabase.from("transactions").insert(rows).select();
+      if (error) { setError(error.message); setImportando(false); return; }
+      onImported(inseridas || []);
+    } finally {
+      setImportando(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h3>Importar planilha</h3><button onClick={onClose}><X size={18} /></button></div>
+        <p className="modal-hint">Colunas esperadas: Data, Estabelecimento, Categoria, Cartão, Parcelamento (ex: 1/12), Valor Total, Valor por Mês.</p>
+        <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
+        {erroLeitura && <p style={{ color: "var(--warn)", fontSize: 12 }}>{erroLeitura}</p>}
+        {linhas && (
+          <>
+            <p className="modal-hint">
+              {nomeArquivo}: {validas.length} linha(s) prontas pra importar{invalidas.length > 0 ? `, ${invalidas.length} com problema` : ""}.
+            </p>
+            {invalidas.length > 0 && (
+              <div className="import-errors">
+                {invalidas.map((l) => (
+                  <div key={l.linha} className="import-error-row">Linha {l.linha}: {l.erros.join(", ")}</div>
+                ))}
+              </div>
+            )}
+            <button className="submit-btn" disabled={validas.length === 0 || importando} onClick={confirmar}>
+              {importando ? "Importando…" : `Importar ${validas.length} transação(ões)`}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1840,6 +2012,8 @@ function Root() {
       .modal-head h3 { font-family: 'Fraunces', Georgia, serif; margin: 0; font-size: 18px; }
       .modal-head button { background: none; border: none; color: var(--muted); cursor: pointer; }
       .modal-hint { font-size: 12px; color: var(--muted); margin: 0; }
+      .import-errors { max-height: 140px; overflow-y: auto; background: rgba(193,97,61,0.08); border: 1px solid var(--warn); border-radius: 8px; padding: 8px; }
+      .import-error-row { font-size: 11px; color: var(--warn); padding: 2px 0; }
       .modal label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
       .modal input, .modal select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--text); font-size: 14px; font-family: inherit; }
       .submit-btn { background: var(--gold); color: #0F1613; border: none; border-radius: 999px; padding: 10px; font-weight: 600; cursor: pointer; margin-top: 4px; }
