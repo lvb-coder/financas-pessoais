@@ -1240,10 +1240,11 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const approvedGlobal = (allTransactionsGlobal || transactions).filter(
     (t) => t.banco === banco && t.tipo === tipo && t.status === "categorizado"
   );
-  const isProgramada = (t) => {
-    if (t.banco === "Bradesco" && t.parcelaTotal === 1) return false;
-    return t.parcelaAtual > 1 || t.data.slice(0, 7) !== competencia(t, fechamentosFatura);
-  };
+  // Parcela 1 é sempre nova transação (acabou de acontecer). "Programada" é só a partir
+  // da parcela 2 — não importa mais comparar mês da compra com mês da fatura, isso causava
+  // classificação errada sempre que a fatura calculada difere do mês da compra (comum em
+  // faturas de cartão por natureza, e também em importações onde a fatura é definida na mão).
+  const isProgramada = (t) => t.parcelaAtual > 1;
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
