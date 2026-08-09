@@ -1768,12 +1768,17 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     let i = 2;
     let dataMin = null, dataMax = null;
     let comDataSemValor = 0;
+    const exemplosDescartados = [];
     for (const linha of linhasBrutas) {
       const primeiro = linha.itens[0]?.texto || "";
       if (!/^\d{2}\/\d{2}$/.test(primeiro)) continue;
       const [dd, mm] = primeiro.split("/");
       const ultimo = linha.itens[linha.itens.length - 1];
-      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) { comDataSemValor++; continue; }
+      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) {
+        comDataSemValor++;
+        if (exemplosDescartados.length < 25) exemplosDescartados.push(linha.itens.map((it) => it.texto).join(" "));
+        continue;
+      }
       const negativo = ultimo.texto.endsWith("-");
       const valorStr = ultimo.texto.replace(/-$/, "");
 
@@ -1799,7 +1804,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     }
 
     // guarda os dados pra registrar os fechamentos de fatura automaticamente na confirmação
-    setDiagnostico({ gruposEncontrados: linhasBrutas.length, comDataSemValor });
+    setDiagnostico({ gruposEncontrados: linhasBrutas.length, comDataSemValor, exemplosDescartados });
     if (dataMin && dataMax) {
       const [anoMin, mesMin] = dataMin.split("-");
       const competenciaAnterior = mesMin === "01" ? `${parseInt(anoMin, 10) - 1}-12` : `${anoMin}-${String(parseInt(mesMin, 10) - 1).padStart(2, "0")}`;
@@ -1960,6 +1965,13 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
               <p className="modal-hint">
                 Diagnóstico: {diagnostico.gruposEncontrados} linha(s) de texto agrupadas no total, {diagnostico.comDataSemValor} com data reconhecida mas sem valor válido no final (descartadas).
               </p>
+            )}
+            {diagnostico?.exemplosDescartados?.length > 0 && (
+              <div className="import-errors">
+                {diagnostico.exemplosDescartados.map((t, idx) => (
+                  <div key={idx} className="import-error-row">{t}</div>
+                ))}
+              </div>
             )}
             {invalidas.length > 0 && (
               <div className="import-errors">
