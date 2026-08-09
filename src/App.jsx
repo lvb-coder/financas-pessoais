@@ -1783,8 +1783,9 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
         continue;
       }
       const ultimo = candidatosValor[candidatosValor.length - 1];
-      const negativoSeparado = linha.itens.some((it) => it.texto === "-" && it.x > ultimo.x && it.x - ultimo.x < 15);
-      const negativo = ultimo.texto.endsWith("-") || negativoSeparado;
+      const idxUltimo = linha.itens.indexOf(ultimo);
+      const proximoItem = linha.itens[idxUltimo + 1];
+      const negativo = ultimo.texto.endsWith("-") || !!(proximoItem && proximoItem.texto.startsWith("-"));
       const valorStr = ultimo.texto.replace(/-$/, "");
 
       // histórico: só o que está entre a data e a cidade — ignora qualquer coisa na posição
