@@ -1597,6 +1597,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   const [erroLeitura, setErroLeitura] = useState("");
   const [importando, setImportando] = useState(false);
   const [fechamentosParaCriar, setFechamentosParaCriar] = useState(null);
+  const [diagnostico, setDiagnostico] = useState(null);
 
   const norm = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -1683,19 +1684,37 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
 
   // Fatura do Bradesco em PDF: usa a posição horizontal (x) de cada palavra pra separar
   // Histórico de Cidade — muito mais confiável do que tentar reconhecer nomes de cidade.
+  // O pdf.js às vezes agrupa uma linha inteira (ou vários pedaços dela) num único item de texto,
+  // diferente do que eu testei fora do navegador. Pra não depender de como ele decide agrupar,
+  // separo qualquer item em palavras, estimando a posição x de cada uma proporcionalmente à
+  // largura do bloco original.
+  const expandirPalavras = (item) => {
+    const texto = item.str;
+    const larguraTotal = item.width || (texto.length * 4);
+    const partes = [];
+    const regex = /\S+/g;
+    let m;
+    while ((m = regex.exec(texto))) {
+      const fracaoInicio = texto.length > 0 ? m.index / texto.length : 0;
+      partes.push({ texto: m[0], x: item.transform[4] + fracaoInicio * larguraTotal, y: item.transform[5] });
+    }
+    return partes;
+  };
+
   const parseBradescoPDF = async (file) => {
     const pdfjsLib = await carregarPdfJs();
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
 
-    const LARGURA_MAX_TABELA = 355; // exclui a barra lateral (Limites/Taxas/Fidelidade), que fica à direita da tabela de lançamentos
     let vencimento = null; // "dd/mm/aaaa"
+    let limiteCidade = null;
+    let larguraMaxTabela = null;
     const linhasBrutas = [];
 
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      const todosItens = content.items.map((it) => ({ texto: it.str, x: it.transform[4], y: it.transform[5] }));
+      const todosItens = content.items.flatMap(expandirPalavras);
 
       // "Vencimento" é um rótulo com a data logo abaixo dele (não do lado, na ordem de leitura do
       // texto) — acha por proximidade de posição, não por regex no texto corrido.
@@ -1711,26 +1730,35 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
         }
       }
 
-      const porLinha = {};
-      for (const item of todosItens) {
-        if (item.x >= LARGURA_MAX_TABELA) continue; // fora da tabela de lançamentos
-        const y = Math.round(item.y);
-        if (!porLinha[y]) porLinha[y] = [];
-        porLinha[y].push(item);
+      // limites das colunas: acha dinamicamente pelas palavras do cabeçalho da tabela
+      // ("Cidade" e o "R$" que fica na mesma linha dela) — evita depender de um número fixo,
+      // que pode não valer igual em todo PDF/navegador.
+      if (limiteCidade === null) {
+        const cidadeHead = todosItens.find((it) => it.texto === "Cidade");
+        if (cidadeHead) {
+          limiteCidade = cidadeHead.x - 3;
+          const rsHead = todosItens.find((it) => it.texto === "R$" && Math.abs(it.y - cidadeHead.y) < 3);
+          larguraMaxTabela = (rsHead ? rsHead.x : cidadeHead.x + 130) + 90;
+        }
       }
-      for (const y of Object.keys(porLinha)) {
-        linhasBrutas.push({ itens: porLinha[y].sort((a, b) => a.x - b.x) });
+
+      // agrupa por posição vertical com tolerância — o pdf.js pode variar 1-2 unidades de y
+      // pra itens da mesma linha visual, dependendo de fonte/renderização
+      const candidatosLinha = todosItens
+        .filter((item) => item.x < (larguraMaxTabela ?? 400))
+        .sort((a, b) => b.y - a.y);
+      const grupos = [];
+      for (const item of candidatosLinha) {
+        let grupo = grupos.find((g) => Math.abs(g.y - item.y) < 2.5);
+        if (!grupo) { grupo = { y: item.y, itens: [] }; grupos.push(grupo); }
+        grupo.itens.push(item);
+      }
+      for (const g of grupos) {
+        linhasBrutas.push({ itens: g.itens.sort((a, b) => a.x - b.x) });
       }
     }
     if (!vencimento) throw new Error('não achei "Vencimento" nessa fatura — não parece o formato esperado do Bradesco.');
-
-    // limite da coluna Cidade: acha dinamicamente pela palavra "Cidade" no cabeçalho da tabela;
-    // se não achar, usa um valor calibrado nesse modelo de fatura
-    let limiteCidade = 200;
-    for (const l of linhasBrutas) {
-      const achou = l.itens.find((it) => it.texto === "Cidade");
-      if (achou) { limiteCidade = achou.x - 3; break; }
-    }
+    if (limiteCidade === null) limiteCidade = 200; // não achou o cabeçalho — usa um valor calibrado nesse modelo
 
     const vMes = vencimento.slice(3, 5);
     const vAno = vencimento.slice(6);
@@ -1739,12 +1767,13 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     const linhas = [];
     let i = 2;
     let dataMin = null, dataMax = null;
+    let comDataSemValor = 0;
     for (const linha of linhasBrutas) {
       const primeiro = linha.itens[0]?.texto || "";
       if (!/^\d{2}\/\d{2}$/.test(primeiro)) continue;
       const [dd, mm] = primeiro.split("/");
       const ultimo = linha.itens[linha.itens.length - 1];
-      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) continue;
+      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) { comDataSemValor++; continue; }
       const negativo = ultimo.texto.endsWith("-");
       const valorStr = ultimo.texto.replace(/-$/, "");
 
@@ -1770,6 +1799,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     }
 
     // guarda os dados pra registrar os fechamentos de fatura automaticamente na confirmação
+    setDiagnostico({ gruposEncontrados: linhasBrutas.length, comDataSemValor });
     if (dataMin && dataMax) {
       const [anoMin, mesMin] = dataMin.split("-");
       const competenciaAnterior = mesMin === "01" ? `${parseInt(anoMin, 10) - 1}-12` : `${anoMin}-${String(parseInt(mesMin, 10) - 1).padStart(2, "0")}`;
@@ -1785,6 +1815,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     setErroLeitura("");
     setNomeArquivo(file.name);
     setFechamentosParaCriar(null);
+    setDiagnostico(null);
     try {
       const ext = file.name.split(".").pop().toLowerCase();
       let processadas;
@@ -1923,6 +1954,11 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
             {fechamentosParaCriar && (
               <p className="modal-hint" style={{ color: "var(--gold)" }}>
                 Vai registrar os fechamentos: {fechamentosParaCriar.map((f) => `${displayBanco(f.banco)} ${f.competencia} = ${f.fechamento.slice(8, 10)}/${f.fechamento.slice(5, 7)}/${f.fechamento.slice(0, 4)}`).join(" · ")}
+              </p>
+            )}
+            {diagnostico && (
+              <p className="modal-hint">
+                Diagnóstico: {diagnostico.gruposEncontrados} linha(s) de texto agrupadas no total, {diagnostico.comDataSemValor} com data reconhecida mas sem valor válido no final (descartadas).
               </p>
             )}
             {invalidas.length > 0 && (
