@@ -1596,6 +1596,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   const [nomeArquivo, setNomeArquivo] = useState("");
   const [erroLeitura, setErroLeitura] = useState("");
   const [importando, setImportando] = useState(false);
+  const [fechamentosParaCriar, setFechamentosParaCriar] = useState(null);
 
   const norm = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -1680,49 +1681,102 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     return linhas;
   };
 
-  // Fatura do Bradesco em PDF: extrai o texto e reconhece linhas no formato
-  // "dd/mm Descrição ... valor[,] [-]" — usa dois cartões (só nos importa saber que é Bradesco).
+  // Fatura do Bradesco em PDF: usa a posição horizontal (x) de cada palavra pra separar
+  // Histórico de Cidade — muito mais confiável do que tentar reconhecer nomes de cidade.
   const parseBradescoPDF = async (file) => {
     const pdfjsLib = await carregarPdfJs();
     const buf = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-    let linhasTexto = [];
+
+    const LARGURA_MAX_TABELA = 355; // exclui a barra lateral (Limites/Taxas/Fidelidade), que fica à direita da tabela de lançamentos
+    let vencimento = null; // "dd/mm/aaaa"
+    const linhasBrutas = [];
+
     for (let p = 1; p <= pdf.numPages; p++) {
       const page = await pdf.getPage(p);
       const content = await page.getTextContent();
-      // agrupa por posição vertical (y) pra reconstruir as linhas da tabela
+      const todosItens = content.items.map((it) => ({ texto: it.str, x: it.transform[4], y: it.transform[5] }));
+
+      // "Vencimento" é um rótulo com a data logo abaixo dele (não do lado, na ordem de leitura do
+      // texto) — acha por proximidade de posição, não por regex no texto corrido.
+      if (!vencimento) {
+        const rotulo = todosItens.find((it) => it.texto === "Vencimento");
+        if (rotulo) {
+          const candidata = todosItens.find((it) =>
+            /^\d{2}\/\d{2}\/\d{4}$/.test(it.texto) &&
+            Math.abs(it.x - rotulo.x) < 15 &&
+            rotulo.y - it.y > 0 && rotulo.y - it.y < 30
+          );
+          if (candidata) vencimento = candidata.texto;
+        }
+      }
+
       const porLinha = {};
-      for (const item of content.items) {
-        const y = Math.round(item.transform[5]);
+      for (const item of todosItens) {
+        if (item.x >= LARGURA_MAX_TABELA) continue; // fora da tabela de lançamentos
+        const y = Math.round(item.y);
         if (!porLinha[y]) porLinha[y] = [];
         porLinha[y].push(item);
       }
-      const ys = Object.keys(porLinha).map(Number).sort((a, b) => b - a);
-      for (const y of ys) {
-        const texto = porLinha[y].sort((a, b) => a.transform[4] - b.transform[4]).map((it) => it.str).join(" ").replace(/\s+/g, " ").trim();
-        if (texto) linhasTexto.push(texto);
+      for (const y of Object.keys(porLinha)) {
+        linhasBrutas.push({ itens: porLinha[y].sort((a, b) => a.x - b.x) });
       }
     }
+    if (!vencimento) throw new Error('não achei "Vencimento" nessa fatura — não parece o formato esperado do Bradesco.');
+
+    // limite da coluna Cidade: acha dinamicamente pela palavra "Cidade" no cabeçalho da tabela;
+    // se não achar, usa um valor calibrado nesse modelo de fatura
+    let limiteCidade = 200;
+    for (const l of linhasBrutas) {
+      const achou = l.itens.find((it) => it.texto === "Cidade");
+      if (achou) { limiteCidade = achou.x - 3; break; }
+    }
+
+    const vMes = vencimento.slice(3, 5);
+    const vAno = vencimento.slice(6);
+    const competenciaAtual = `${vAno}-${vMes}`;
+
     const linhas = [];
     let i = 2;
-    const anoAtual = new Date().getFullYear();
-    for (const texto of linhasTexto) {
-      const m = texto.match(/^(\d{2})\/(\d{2})\s+(.+?)\s+([\d.,]+)\s*(-)?\s*$/);
-      if (!m) continue;
-      const [, dd, mm, meio, valorStr] = m;
-      const negativo = !!m[5];
-      if (/pagto\.?\s*por\s*deb/i.test(meio) || /pagamento recebido/i.test(meio)) { continue; }
-      if (/^n[uú]mero do cart[ãa]o/i.test(meio) || /^total (para|da fatura)/i.test(meio)) continue;
-      // tira a cidade do final (normalmente 1-3 palavras em maiúsculas antes do valor) — fica como veio se não der pra separar
-      let estabelecimento = meio.replace(/\s+(RIO DE JANEIR[O]?|SAO PAULO|S[ÃA]O PAULO|SO PAULO|[A-ZÀ-Ú.]{3,20})$/u, "").trim() || meio;
-      const parcMatch = estabelecimento.match(/^(.*?)\s+(\d{1,2})\/(\d{1,2})$/);
+    let dataMin = null, dataMax = null;
+    for (const linha of linhasBrutas) {
+      const primeiro = linha.itens[0]?.texto || "";
+      if (!/^\d{2}\/\d{2}$/.test(primeiro)) continue;
+      const [dd, mm] = primeiro.split("/");
+      const ultimo = linha.itens[linha.itens.length - 1];
+      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) continue;
+      const negativo = ultimo.texto.endsWith("-");
+      const valorStr = ultimo.texto.replace(/-$/, "");
+
+      const meio = linha.itens.slice(1, -1);
+      const historico = meio.filter((it) => it.x < limiteCidade).map((it) => it.texto).join(" ").trim();
+      if (!historico) continue;
+      if (/pagto\.?\s*por\s*deb/i.test(historico) || /pagamento recebido/i.test(historico)) continue;
+      if (/^n[uú]mero do cart[ãa]o/i.test(historico) || /^total (para|da fatura)/i.test(historico)) continue;
+
       let parcelaAtual = 1, parcelaTotal = 1;
-      if (parcMatch && parseInt(parcMatch[3], 10) > 1) { estabelecimento = parcMatch[1].trim(); parcelaAtual = parseInt(parcMatch[2], 10); parcelaTotal = parseInt(parcMatch[3], 10); }
+      const parcMatch = historico.match(/(\d{1,2})\/(\d{1,2})\s*$/);
+      if (parcMatch && parseInt(parcMatch[2], 10) > 1) { parcelaAtual = parseInt(parcMatch[1], 10); parcelaTotal = parseInt(parcMatch[2], 10); }
+
+      // ano: mês da transação maior que o mês de vencimento (ex: nov/dez pra vencimento em jan) = ano anterior
+      const ano = parseInt(mm, 10) > parseInt(vMes, 10) ? String(parseInt(vAno, 10) - 1) : vAno;
+      const data = `${ano}-${mm}-${dd}`;
+      if (!dataMin || data < dataMin) dataMin = data;
+      if (!dataMax || data > dataMax) dataMax = data;
+
       const valorNum = parseValorCampo(valorStr) * (negativo ? -1 : 1);
-      // sem o ano explícito na fatura — assume o ano corrente; ajuste manual se cair em dez/jan de virada
-      const data = `${anoAtual}-${mm}-${dd}`;
-      linhas.push(montarLinha(i, { data, estabelecimento, banco: "Bradesco", parcelaAtual, parcelaTotal, valorMes: valorNum }));
+      linhas.push(montarLinha(i, { data, estabelecimento: historico, banco: "Bradesco", parcelaAtual, parcelaTotal, valorMes: valorNum }));
       i++;
+    }
+
+    // guarda os dados pra registrar os fechamentos de fatura automaticamente na confirmação
+    if (dataMin && dataMax) {
+      const [anoMin, mesMin] = dataMin.split("-");
+      const competenciaAnterior = mesMin === "01" ? `${parseInt(anoMin, 10) - 1}-12` : `${anoMin}-${String(parseInt(mesMin, 10) - 1).padStart(2, "0")}`;
+      setFechamentosParaCriar([
+        { banco: "Bradesco", competencia: competenciaAnterior, fechamento: dataMin },
+        { banco: "Bradesco", competencia: competenciaAtual, fechamento: dataMax },
+      ]);
     }
     return linhas;
   };
@@ -1730,6 +1784,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   const handleFile = async (file) => {
     setErroLeitura("");
     setNomeArquivo(file.name);
+    setFechamentosParaCriar(null);
     try {
       const ext = file.name.split(".").pop().toLowerCase();
       let processadas;
@@ -1797,6 +1852,14 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
         }));
         const { data: inseridas, error } = await supabase.from("transactions").insert(rows).select();
         if (error) { setError(error.message); setImportando(false); return; }
+        if (fechamentosParaCriar) {
+          for (const f of fechamentosParaCriar) {
+            const { error: fErr } = await supabase
+              .from("fechamentos_fatura")
+              .upsert({ banco: f.banco, competencia: f.competencia, fechamento: f.fechamento, user_id: userId }, { onConflict: "banco,competencia,user_id" });
+            if (fErr) { setError("Transações importadas, mas não consegui registrar o fechamento da fatura: " + fErr.message); }
+          }
+        }
         onImported(inseridas || []);
         return;
       }
@@ -1839,8 +1902,8 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>Importar fatura</h3><button onClick={onClose}><X size={18} /></button></div>
         <div className="import-mode-toggle">
-          <label><input type="radio" checked={modo === "pendente"} onChange={() => { setModo("pendente"); setLinhas(null); }} /> Como pendente (revisar depois, com sugestão automática)</label>
-          <label><input type="radio" checked={modo === "categorizado"} onChange={() => { setModo("categorizado"); setLinhas(null); }} /> Já categorizado (a planilha já tem a categoria certa)</label>
+          <label><input type="radio" checked={modo === "pendente"} onChange={() => { setModo("pendente"); setLinhas(null); setFechamentosParaCriar(null); }} /> Como pendente (revisar depois, com sugestão automática)</label>
+          <label><input type="radio" checked={modo === "categorizado"} onChange={() => { setModo("categorizado"); setLinhas(null); setFechamentosParaCriar(null); }} /> Já categorizado (a planilha já tem a categoria certa)</label>
         </div>
         <p className="modal-hint">
           Reconhece direto: fatura em <strong>PDF do Bradesco</strong>, extrato em <strong>CSV da Nubank</strong> (exportado pelo app do banco), ou planilha própria.
@@ -1857,6 +1920,11 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
             <p className="modal-hint">
               {nomeArquivo}: {validas.length} linha(s) prontas pra importar{invalidas.length > 0 ? `, ${invalidas.length} com problema` : ""}.
             </p>
+            {fechamentosParaCriar && (
+              <p className="modal-hint" style={{ color: "var(--gold)" }}>
+                Vai registrar os fechamentos: {fechamentosParaCriar.map((f) => `${displayBanco(f.banco)} ${f.competencia} = ${f.fechamento.slice(8, 10)}/${f.fechamento.slice(5, 7)}/${f.fechamento.slice(0, 4)}`).join(" · ")}
+              </p>
+            )}
             {invalidas.length > 0 && (
               <div className="import-errors">
                 {invalidas.map((l) => (
