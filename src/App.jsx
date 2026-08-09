@@ -1646,7 +1646,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     return categories.find((c) => norm(c.name) === s) || null;
   };
 
-  const montarLinha = (i, { data, estabelecimento, banco, parcelaAtual, parcelaTotal, valorMes, categoriaRaw }) => {
+  const montarLinha = (i, { data, estabelecimento, banco, parcelaAtual, parcelaTotal, valorMes, categoriaRaw, competenciaOverride }) => {
     const cat = categoriaRaw ? acharCategoria(categoriaRaw) : null;
     const erros = [];
     if (!data) erros.push("data inválida");
@@ -1654,7 +1654,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     if (modo === "categorizado" && !cat) erros.push(`categoria "${categoriaRaw || ""}" não encontrada`);
     if (!banco) erros.push(`cartão não encontrado`);
     if (!valorMes) erros.push("valor inválido");
-    return { linha: i, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual, parcelaTotal, valorMes, erros };
+    return { linha: i, data, estabelecimento, categoryId: cat?.id, categoriaNome: cat?.name, banco, parcelaAtual, parcelaTotal, valorMes, competenciaOverride, erros };
   };
 
   // Fatura da Nubank exportada em CSV (colunas: date, title, amount).
@@ -1807,7 +1807,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
       if (!dataMax || data > dataMax) dataMax = data;
 
       const valorNum = parseValorCampo(valorStr) * (negativo ? -1 : 1);
-      linhas.push(montarLinha(i, { data, estabelecimento: historico, banco: "Bradesco", parcelaAtual, parcelaTotal, valorMes: valorNum }));
+      linhas.push(montarLinha(i, { data, estabelecimento: historico, banco: "Bradesco", parcelaAtual, parcelaTotal, valorMes: valorNum, competenciaOverride: competenciaAtual }));
       i++;
     }
 
@@ -1893,6 +1893,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
           merchant_id: null,
           parcela_atual: l.parcelaAtual,
           parcela_total: l.parcelaTotal,
+          competencia_override: l.competenciaOverride || null,
         }));
         const { data: inseridas, error } = await supabase.from("transactions").insert(rows).select();
         if (error) { setError(error.message); setImportando(false); return; }
