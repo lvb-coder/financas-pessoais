@@ -1708,7 +1708,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
 
     let vencimento = null; // "dd/mm/aaaa"
     let limiteCidade = null;
-    let larguraMaxTabela = null;
+    let xValor = null; // posição x esperada da coluna de valor (R$)
     const linhasBrutas = [];
 
     for (let p = 1; p <= pdf.numPages; p++) {
@@ -1731,24 +1731,21 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
       }
 
       // limites das colunas: acha dinamicamente pelas palavras do cabeçalho da tabela
-      // ("Cidade" e o "R$" que fica na mesma linha dela) — evita depender de um número fixo,
-      // que pode não valer igual em todo PDF/navegador.
+      // ("Cidade" e o "R$" que fica na mesma linha dela) — evita depender de um número fixo.
       if (limiteCidade === null) {
         const cidadeHead = todosItens.find((it) => it.texto === "Cidade");
         if (cidadeHead) {
           limiteCidade = cidadeHead.x - 3;
           const rsHead = todosItens.find((it) => it.texto === "R$" && Math.abs(it.y - cidadeHead.y) < 3);
-          larguraMaxTabela = (rsHead ? rsHead.x : cidadeHead.x + 130) + 90;
+          xValor = rsHead ? rsHead.x : cidadeHead.x + 130;
         }
       }
 
-      // agrupa por posição vertical com tolerância — o pdf.js pode variar 1-2 unidades de y
-      // pra itens da mesma linha visual, dependendo de fonte/renderização
-      const candidatosLinha = todosItens
-        .filter((item) => item.x < (larguraMaxTabela ?? 400))
-        .sort((a, b) => b.y - a.y);
+      // agrupa por posição vertical com tolerância — sem filtrar por x aqui ainda, pra não
+      // arriscar cortar nada; o corte por coluna acontece depois, linha por linha
+      const porY = [...todosItens].sort((a, b) => b.y - a.y);
       const grupos = [];
-      for (const item of candidatosLinha) {
+      for (const item of porY) {
         let grupo = grupos.find((g) => Math.abs(g.y - item.y) < 2.5);
         if (!grupo) { grupo = { y: item.y, itens: [] }; grupos.push(grupo); }
         grupo.itens.push(item);
@@ -1759,6 +1756,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     }
     if (!vencimento) throw new Error('não achei "Vencimento" nessa fatura — não parece o formato esperado do Bradesco.');
     if (limiteCidade === null) limiteCidade = 200; // não achou o cabeçalho — usa um valor calibrado nesse modelo
+    if (xValor === null) xValor = 330;
 
     const vMes = vencimento.slice(3, 5);
     const vAno = vencimento.slice(6);
@@ -1773,17 +1771,27 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
       const primeiro = linha.itens[0]?.texto || "";
       if (!/^\d{2}\/\d{2}$/.test(primeiro)) continue;
       const [dd, mm] = primeiro.split("/");
-      const ultimo = linha.itens[linha.itens.length - 1];
-      if (!ultimo || !/^[\d.,]+-?$/.test(ultimo.texto) || !/\d/.test(ultimo.texto)) {
+
+      // o valor é o item numérico mais próximo da posição esperada da coluna R$ — não
+      // necessariamente o último item da linha (pode ter texto de outra coluna colado depois)
+      const candidatosValor = linha.itens.filter((it) =>
+        /^[\d.,]+-?$/.test(it.texto) && /\d/.test(it.texto) && Math.abs(it.x - xValor) < 20
+      );
+      if (candidatosValor.length === 0) {
         comDataSemValor++;
         if (exemplosDescartados.length < 25) exemplosDescartados.push(linha.itens.map((it) => it.texto).join(" "));
         continue;
       }
-      const negativo = ultimo.texto.endsWith("-");
+      const ultimo = candidatosValor[candidatosValor.length - 1];
+      const negativoSeparado = linha.itens.some((it) => it.texto === "-" && it.x > ultimo.x && it.x - ultimo.x < 15);
+      const negativo = ultimo.texto.endsWith("-") || negativoSeparado;
       const valorStr = ultimo.texto.replace(/-$/, "");
 
-      const meio = linha.itens.slice(1, -1);
-      const historico = meio.filter((it) => it.x < limiteCidade).map((it) => it.texto).join(" ").trim();
+      // histórico: só o que está entre a data e a cidade — ignora qualquer coisa na posição
+      // do valor em diante (o valor pode não ser literalmente o último item da linha)
+      const historico = linha.itens
+        .filter((it) => it !== linha.itens[0] && it.x < limiteCidade && it.x < ultimo.x - 5)
+        .map((it) => it.texto).join(" ").trim();
       if (!historico) continue;
       if (/pagto\.?\s*por\s*deb/i.test(historico) || /pagamento recebido/i.test(historico)) continue;
       if (/^n[uú]mero do cart[ãa]o/i.test(historico) || /^total (para|da fatura)/i.test(historico)) continue;
