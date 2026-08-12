@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Component } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2 } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -306,6 +306,15 @@ const mapTransaction = (row) => ({
   duplicateReviewed: row.duplicate_reviewed, origemId: row.origem_id, conferido: row.conferido,
   excluidaEm: row.excluida_em, pixCredito: row.pix_credito,
 });
+// inverso de mapTransaction — usado só pra restaurar uma linha inteira no desfazer/refazer
+const toDbRow = (t) => ({
+  id: t.id, data: t.data, estabelecimento: t.estabelecimento, valor: t.valor,
+  tipo: t.tipo, banco: t.banco, status: t.status, category_id: t.categoryId ?? null, merchant_id: t.merchantId ?? null,
+  competencia_override: t.competenciaOverride ?? null, projetada: !!t.projetada,
+  parcela_atual: t.parcelaAtual, parcela_total: t.parcelaTotal, payment_data: t.paymentData ?? null,
+  duplicate_reviewed: !!t.duplicateReviewed, origem_id: t.origemId ?? null, conferido: !!t.conferido,
+  excluida_em: t.excluidaEm ?? null, pix_credito: !!t.pixCredito,
+});
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
 const mapFechamento = (row) => ({ id: row.id, banco: row.banco, competencia: row.competencia, fechamento: row.fechamento });
@@ -380,6 +389,69 @@ function Dashboard({ userId }) {
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
+  const [desfazendo, setDesfazendo] = useState(false);
+  const MAX_HISTORICO = 20;
+
+  // Chame no INÍCIO de qualquer ação que grava no banco, antes de mexer em transactions —
+  // guarda uma foto de como as transações estavam, pra dar pra desfazer depois.
+  const registrarAntesDe = (label) => {
+    if (desfazendo) return; // desfazer/refazer não deve virar uma nova entrada no histórico
+    setUndoStack((prev) => [...prev.slice(-(MAX_HISTORICO - 1)), { label, snapshot: transactions.map((t) => ({ ...t })) }]);
+    setRedoStack([]);
+  };
+
+  const desfazer = async () => {
+    if (undoStack.length === 0) return;
+    setDesfazendo(true);
+    try {
+      const ultimo = undoStack[undoStack.length - 1];
+      setUndoStack((prev) => prev.slice(0, -1));
+      setRedoStack((prev) => [...prev.slice(-(MAX_HISTORICO - 1)), { label: ultimo.label, snapshot: transactions.map((t) => ({ ...t })) }]);
+
+      const idsAntes = new Set(ultimo.snapshot.map((t) => t.id));
+      const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
+
+      for (const t of ultimo.snapshot) {
+        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t));
+        if (upErr) { setError(upErr.message); }
+      }
+      if (idsParaApagar.length > 0) {
+        const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
+        if (delErr) { setError(delErr.message); }
+      }
+      setTransactions(ultimo.snapshot);
+    } finally {
+      setDesfazendo(false);
+    }
+  };
+
+  const refazer = async () => {
+    if (redoStack.length === 0) return;
+    setDesfazendo(true);
+    try {
+      const ultimo = redoStack[redoStack.length - 1];
+      setRedoStack((prev) => prev.slice(0, -1));
+      setUndoStack((prev) => [...prev.slice(-(MAX_HISTORICO - 1)), { label: ultimo.label, snapshot: transactions.map((t) => ({ ...t })) }]);
+
+      const idsAntes = new Set(ultimo.snapshot.map((t) => t.id));
+      const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
+
+      for (const t of ultimo.snapshot) {
+        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t));
+        if (upErr) { setError(upErr.message); }
+      }
+      if (idsParaApagar.length > 0) {
+        const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
+        if (delErr) { setError(delErr.message); }
+      }
+      setTransactions(ultimo.snapshot);
+    } finally {
+      setDesfazendo(false);
+    }
+  };
+
   const [connecting, setConnecting] = useState(false);
   const [incomes, setIncomes] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -573,6 +645,7 @@ function Dashboard({ userId }) {
   const totalIncome = monthIncomes.reduce((s, i) => s + Number(i.valor), 0);
 
   const addRawTransaction = async ({ data, estabelecimento, valor, tipo, banco, categoryId, competenciaOverride, parcelaAtual, parcelaTotal }) => {
+    registrarAntesDe(`Adicionar "${estabelecimento}"`);
     const name = titleCase(estabelecimento.trim());
     const { data: merchant, error: merchErr } = await supabase
       .from("merchants")
@@ -599,6 +672,7 @@ function Dashboard({ userId }) {
   const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito, banco }) => {
     const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
+    registrarAntesDe(`Aprovar/editar "${merchantName.trim()}"`);
     const pattern = stripParcela(tx.estabelecimento).toLowerCase();
     if (!pattern) return;
     const dataFinal = data || tx.data;
@@ -746,6 +820,7 @@ function Dashboard({ userId }) {
 
   // "Excluir" agora manda pra lixeira em vez de apagar de vez
   const removeTransaction = async (id) => {
+    registrarAntesDe("Excluir transação");
     const tx = transactions.find((t) => t.id === id);
     let ids = [id];
     if (tx && tx.status === "categorizado" && tx.merchantId) {
@@ -767,6 +842,7 @@ function Dashboard({ userId }) {
   };
 
   const restoreTransaction = async (id) => {
+    registrarAntesDe("Restaurar transação");
     const tx = transactions.find((t) => t.id === id);
     const novoStatus = tx?.statusAnterior || "pendente_estabelecimento";
     const { error } = await supabase.from("transactions").update({ status: novoStatus, excluida_em: null }).eq("id", id);
@@ -775,6 +851,7 @@ function Dashboard({ userId }) {
   };
 
   const purgeTransaction = async (id) => {
+    registrarAntesDe("Apagar de vez");
     const { error } = await supabase.from("transactions").delete().eq("id", id);
     if (error) { setError(error.message); return; }
     setTransactions((prev) => prev.filter((t) => t.id !== id));
@@ -845,6 +922,12 @@ function Dashboard({ userId }) {
           )}
           <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
             <Landmark size={16} /> {connecting ? "Conectando…" : <Mask value="Conectar banco" active={seguro} />}
+          </button>
+          <button className="icon-btn" onClick={desfazer} disabled={undoStack.length === 0} aria-label="Desfazer" title={undoStack.length > 0 ? `Desfazer: ${undoStack[undoStack.length - 1].label}` : "Nada pra desfazer"}>
+            <Undo2 size={18} />
+          </button>
+          <button className="icon-btn" onClick={refazer} disabled={redoStack.length === 0} aria-label="Refazer" title={redoStack.length > 0 ? `Refazer: ${redoStack[redoStack.length - 1].label}` : "Nada pra refazer"}>
+            <Redo2 size={18} />
           </button>
           <div className="privacy-controls">
             <button
@@ -1057,6 +1140,7 @@ function Dashboard({ userId }) {
           setError={setError}
           onClose={() => setShowImport(false)}
           onImported={async (inseridas) => {
+            registrarAntesDe(`Importar fatura (${inseridas.length} transações)`);
             setTransactions((prev) => [...inseridas.map(mapTransaction), ...prev]);
             const { data: merch } = await supabase.from("merchants").select("*").order("name");
             if (merch) setMerchants(merch.map(mapMerchant));
@@ -2170,6 +2254,7 @@ function Root() {
       .mask-peek { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; user-select: none; -webkit-user-select: none; touch-action: none; }
       .mask-peek:hover { color: var(--text); }
       .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
+      .icon-btn:disabled { opacity: 0.35; cursor: default; }
       .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
       .connect-btn:disabled { opacity: 0.6; cursor: default; }
       .spin { animation: spin 1s linear infinite; }
