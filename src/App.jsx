@@ -307,13 +307,13 @@ const mapTransaction = (row) => ({
   excluidaEm: row.excluida_em, pixCredito: row.pix_credito,
 });
 // inverso de mapTransaction — usado só pra restaurar uma linha inteira no desfazer/refazer
-const toDbRow = (t) => ({
+const toDbRow = (t, userId) => ({
   id: t.id, data: t.data, estabelecimento: t.estabelecimento, valor: t.valor,
   tipo: t.tipo, banco: t.banco, status: t.status, category_id: t.categoryId ?? null, merchant_id: t.merchantId ?? null,
   competencia_override: t.competenciaOverride ?? null, projetada: !!t.projetada,
   parcela_atual: t.parcelaAtual, parcela_total: t.parcelaTotal, payment_data: t.paymentData ?? null,
   duplicate_reviewed: !!t.duplicateReviewed, origem_id: t.origemId ?? null, conferido: !!t.conferido,
-  excluida_em: t.excluidaEm ?? null, pix_credito: !!t.pixCredito,
+  excluida_em: t.excluidaEm ?? null, pix_credito: !!t.pixCredito, user_id: userId,
 });
 const mapMerchant = (row) => ({ id: row.id, name: row.name, categoryId: row.category_id });
 const mapPattern = (row) => ({ id: row.id, pattern: row.pattern, merchantId: row.merchant_id });
@@ -414,7 +414,7 @@ function Dashboard({ userId }) {
       const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
 
       for (const t of ultimo.snapshot) {
-        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t));
+        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t, userId));
         if (upErr) { setError(upErr.message); }
       }
       if (idsParaApagar.length > 0) {
@@ -439,7 +439,7 @@ function Dashboard({ userId }) {
       const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
 
       for (const t of ultimo.snapshot) {
-        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t));
+        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t, userId));
         if (upErr) { setError(upErr.message); }
       }
       if (idsParaApagar.length > 0) {
@@ -708,14 +708,24 @@ function Dashboard({ userId }) {
 
     // Ao editar uma parcela já aprovada (data, categoria/estabelecimento ou número da parcela),
     // propaga a mudança pras outras parcelas da mesma série — vale pra qualquer compra parcelada.
+    // Parcelas ANTERIORES à que está sendo editada já aconteceram — só a categoria/estabelecimento
+    // delas acompanha (pra manter a série toda categorizada igual), a data/fatura delas não muda.
+    // Só as parcelas a partir da posição original da que está sendo editada (inclusive) deslizam
+    // junto com ela.
     const wasApproved = tx.status === "categorizado";
     if (wasApproved) {
-      const deltaParcela = parcelaAtual - (tx.parcelaAtual || parcelaAtual);
+      const parcelaOriginal = tx.parcelaAtual || parcelaAtual;
+      const deltaParcela = parcelaAtual - parcelaOriginal;
       const siblings = transactions.filter((t) => t.id !== tx.id && (t.origemId || t.id) === origemId);
       for (const s of siblings) {
-        const novaParcela = s.parcelaAtual + deltaParcela;
-        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, parcela_atual: novaParcela, data: dataFinal, pix_credito: !!pixCredito };
-        if (competenciaOverride) upd.competencia_override = addFatura(competenciaOverride, novaParcela - parcelaAtual);
+        const seguePraFrente = s.parcelaAtual >= parcelaOriginal;
+        const novaParcela = seguePraFrente ? s.parcelaAtual + deltaParcela : s.parcelaAtual;
+        const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, pix_credito: !!pixCredito };
+        if (seguePraFrente) {
+          upd.parcela_atual = novaParcela;
+          upd.data = dataFinal;
+          if (competenciaOverride) upd.competencia_override = addFatura(competenciaOverride, novaParcela - parcelaAtual);
+        }
         const { error: sibErr } = await supabase.from("transactions").update(upd).eq("id", s.id);
         if (sibErr) { setError(sibErr.message); }
       }
@@ -723,10 +733,14 @@ function Dashboard({ userId }) {
         setTransactions((prev) => prev.map((t) => {
           const s = siblings.find((x) => x.id === t.id);
           if (!s) return t;
-          const novaParcela = s.parcelaAtual + deltaParcela;
+          const seguePraFrente = s.parcelaAtual >= parcelaOriginal;
+          const novaParcela = seguePraFrente ? s.parcelaAtual + deltaParcela : s.parcelaAtual;
           return {
-            ...t, categoryId, merchantId: merchant.id, parcelaTotal, parcelaAtual: novaParcela, data: dataFinal, pixCredito: !!pixCredito,
-            ...(competenciaOverride ? { competenciaOverride: addFatura(competenciaOverride, novaParcela - parcelaAtual) } : {}),
+            ...t, categoryId, merchantId: merchant.id, parcelaTotal, pixCredito: !!pixCredito,
+            ...(seguePraFrente ? {
+              parcelaAtual: novaParcela, data: dataFinal,
+              ...(competenciaOverride ? { competenciaOverride: addFatura(competenciaOverride, novaParcela - parcelaAtual) } : {}),
+            } : {}),
           };
         }));
       }
