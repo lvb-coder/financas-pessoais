@@ -1338,8 +1338,10 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
 }
 
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido, onToggleConferidoEmLote }) {
-  const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
-  const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
+  const [sortNovas, setSortNovas] = useState(() => loadLS(`sortNovas_${banco}_${tipo}`, { key: "data", dir: -1 }));
+  const [sortProgramadas, setSortProgramadas] = useState(() => loadLS(`sortProgramadas_${banco}_${tipo}`, { key: "data", dir: -1 }));
+  useEffect(() => { saveLS(`sortNovas_${banco}_${tipo}`, sortNovas); }, [sortNovas, banco, tipo]);
+  useEffect(() => { saveLS(`sortProgramadas_${banco}_${tipo}`, sortProgramadas); }, [sortProgramadas, banco, tipo]);
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
   if (all.length === 0) return null;
 
@@ -1355,10 +1357,6 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
   const pending = all.filter((t) => t.status !== "categorizado");
-
-  const totalFatura = approved.reduce((s, t) => s + Number(t.valor), 0);
-  const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
-  const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
 
   const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
 
@@ -1387,6 +1385,11 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const pendingF = dedupPendentes(pending.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), merchants, patterns).sort((a, b) => b.data.localeCompare(a.data));
   const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortNovas);
   const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortProgramadas);
+
+  // os totais do resumo acompanham o que está sendo buscado — digitou algo, os números refletem só o que bateu
+  const totalNovas = novasF.reduce((s, t) => s + Number(t.valor), 0);
+  const totalProgramadas = programadasF.reduce((s, t) => s + Number(t.valor), 0);
+  const totalFatura = totalNovas + totalProgramadas;
 
   return (
     <section className="bank-group">
@@ -1858,6 +1861,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
 
     let vencimento = null; // "dd/mm/aaaa"
+    let totalOficial = null; // valor total informado na própria fatura, só pra conferência
     let limiteCidade = null;
     let xValor = null; // posição x esperada da coluna de valor (R$)
     const linhasBrutas = [];
@@ -1878,6 +1882,20 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
             rotulo.y - it.y > 0 && rotulo.y - it.y < 30
           );
           if (candidata) vencimento = candidata.texto;
+        }
+      }
+
+      // "Total da fatura" funciona igual — só pra mostrar antes de importar e comparar
+      // com a soma das linhas lidas (não afeta o resultado, é só conferência)
+      if (totalOficial === null) {
+        const rotuloTotal = todosItens.find((it) => it.texto === "Total");
+        if (rotuloTotal) {
+          const candidataTotal = todosItens.find((it) =>
+            /^[\d.,]+$/.test(it.texto) && /\d,\d{2}$/.test(it.texto) &&
+            Math.abs(it.x - rotuloTotal.x) < 60 &&
+            rotuloTotal.y - it.y > 0 && rotuloTotal.y - it.y < 30
+          );
+          if (candidataTotal) totalOficial = parseValorCampo(candidataTotal.texto);
         }
       }
 
@@ -1964,7 +1982,8 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     }
 
     // guarda os dados pra registrar os fechamentos de fatura automaticamente na confirmação
-    setDiagnostico({ gruposEncontrados: linhasBrutas.length, comDataSemValor, exemplosDescartados });
+    const somaLida = linhas.reduce((s, l) => s + (l.valorMes || 0), 0);
+    setDiagnostico({ gruposEncontrados: linhasBrutas.length, comDataSemValor, exemplosDescartados, somaLida, totalOficial });
     if (dataMin && dataMax) {
       const [anoMin, mesMin] = dataMin.split("-");
       const competenciaAnterior = mesMin === "01" ? `${parseInt(anoMin, 10) - 1}-12` : `${anoMin}-${String(parseInt(mesMin, 10) - 1).padStart(2, "0")}`;
@@ -2116,6 +2135,17 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
           <>
             <p className="modal-hint">
               {nomeArquivo}: {validas.length} linha(s) prontas pra importar{invalidas.length > 0 ? `, ${invalidas.length} com problema` : ""}.
+            </p>
+            <p className="modal-hint" style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}>
+              Soma das linhas: {currency(validas.reduce((s, l) => s + (l.valorMes || 0), 0))}
+              {diagnostico?.totalOficial != null && (
+                <>
+                  {" "}· Total informado na fatura: {currency(diagnostico.totalOficial)}
+                  {Math.abs(validas.reduce((s, l) => s + (l.valorMes || 0), 0) - diagnostico.totalOficial) < 0.02
+                    ? <span style={{ color: "var(--ok)" }}> ✓ bate</span>
+                    : <span style={{ color: "var(--warn)" }}> ⚠ não bate</span>}
+                </>
+              )}
             </p>
             {fechamentosParaCriar && (
               <p className="modal-hint" style={{ color: "var(--gold)" }}>
