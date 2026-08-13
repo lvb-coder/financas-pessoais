@@ -389,10 +389,13 @@ function Dashboard({ userId }) {
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
-  const [undoStack, setUndoStack] = useState([]);
-  const [redoStack, setRedoStack] = useState([]);
+  const [undoStack, setUndoStack] = useState(() => loadLS(`undoStack_${userId}`, []));
+  const [redoStack, setRedoStack] = useState(() => loadLS(`redoStack_${userId}`, []));
   const [desfazendo, setDesfazendo] = useState(false);
   const MAX_HISTORICO = 20;
+
+  useEffect(() => { saveLS(`undoStack_${userId}`, undoStack); }, [undoStack, userId]);
+  useEffect(() => { saveLS(`redoStack_${userId}`, redoStack); }, [redoStack, userId]);
 
   // Chame no INÍCIO de qualquer ação que grava no banco, antes de mexer em transactions —
   // guarda uma foto de como as transações estavam, pra dar pra desfazer depois.
@@ -402,6 +405,23 @@ function Dashboard({ userId }) {
     setRedoStack([]);
   };
 
+  // Restaura uma foto do histórico: um upsert só em lote (bem mais rápido que um por linha)
+  // + apaga o que não existia naquele momento.
+  const restaurarSnapshot = async (snapshot) => {
+    const idsAntes = new Set(snapshot.map((t) => t.id));
+    const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
+    if (snapshot.length > 0) {
+      const { error: upErr } = await supabase.from("transactions").upsert(snapshot.map((t) => toDbRow(t, userId)));
+      if (upErr) { setError(upErr.message); return false; }
+    }
+    if (idsParaApagar.length > 0) {
+      const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
+      if (delErr) { setError(delErr.message); return false; }
+    }
+    setTransactions(snapshot);
+    return true;
+  };
+
   const desfazer = async () => {
     if (undoStack.length === 0) return;
     setDesfazendo(true);
@@ -409,19 +429,7 @@ function Dashboard({ userId }) {
       const ultimo = undoStack[undoStack.length - 1];
       setUndoStack((prev) => prev.slice(0, -1));
       setRedoStack((prev) => [...prev.slice(-(MAX_HISTORICO - 1)), { label: ultimo.label, snapshot: transactions.map((t) => ({ ...t })) }]);
-
-      const idsAntes = new Set(ultimo.snapshot.map((t) => t.id));
-      const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
-
-      for (const t of ultimo.snapshot) {
-        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t, userId));
-        if (upErr) { setError(upErr.message); }
-      }
-      if (idsParaApagar.length > 0) {
-        const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
-        if (delErr) { setError(delErr.message); }
-      }
-      setTransactions(ultimo.snapshot);
+      await restaurarSnapshot(ultimo.snapshot);
     } finally {
       setDesfazendo(false);
     }
@@ -434,19 +442,7 @@ function Dashboard({ userId }) {
       const ultimo = redoStack[redoStack.length - 1];
       setRedoStack((prev) => prev.slice(0, -1));
       setUndoStack((prev) => [...prev.slice(-(MAX_HISTORICO - 1)), { label: ultimo.label, snapshot: transactions.map((t) => ({ ...t })) }]);
-
-      const idsAntes = new Set(ultimo.snapshot.map((t) => t.id));
-      const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
-
-      for (const t of ultimo.snapshot) {
-        const { error: upErr } = await supabase.from("transactions").upsert(toDbRow(t, userId));
-        if (upErr) { setError(upErr.message); }
-      }
-      if (idsParaApagar.length > 0) {
-        const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
-        if (delErr) { setError(delErr.message); }
-      }
-      setTransactions(ultimo.snapshot);
+      await restaurarSnapshot(ultimo.snapshot);
     } finally {
       setDesfazendo(false);
     }
@@ -884,6 +880,13 @@ function Dashboard({ userId }) {
     setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, conferido: value } : t)));
   };
 
+  const toggleConferidoEmLote = async (ids, value) => {
+    if (ids.length === 0) return;
+    const { error } = await supabase.from("transactions").update({ conferido: value }).in("id", ids);
+    if (error) { setError(error.message); return; }
+    setTransactions((prev) => prev.map((t) => (ids.includes(t.id) ? { ...t, conferido: value } : t)));
+  };
+
   const updateLimit = async (id, value) => {
     const limit = parseFloat(value) || 0;
     setCategories((prev) => prev.map((c) => (c.id === id ? { ...c, limit } : c)));
@@ -1028,9 +1031,6 @@ function Dashboard({ userId }) {
 
       {view === "transacoes" && subView === "mensal" && (
         <>
-          <datalist id="merchants-list">
-            {merchants.map((m) => <option key={m.id} value={m.name} />)}
-          </datalist>
           {[
             { banco: "Nubank", tipo: "Crédito" },
             { banco: "Bradesco", tipo: "Crédito" },
@@ -1053,6 +1053,7 @@ function Dashboard({ userId }) {
               onRevert={rejectTransaction}
               onRemove={removeTransaction}
               onToggleConferido={toggleConferido}
+              onToggleConferidoEmLote={toggleConferidoEmLote}
             />
           ))}
         </>
@@ -1169,7 +1170,7 @@ function Dashboard({ userId }) {
   );
 }
 
-function SortableHead({ sort, setSort, seguro, showBanco, showConferido }) {
+function SortableHead({ sort, setSort, seguro, showBanco, showConferido, todosConferidos, onToggleTodos }) {
   const [revealed, setRevealed] = useState(false);
   const cols = [
     { key: "data", label: "Data" },
@@ -1202,7 +1203,15 @@ function SortableHead({ sort, setSort, seguro, showBanco, showConferido }) {
       <button className="tx-head-btn" onClick={() => click("mes")}><MaskText value="Valor/Mês" active={seguro} show={revealed} />{arrow("mes")}</button>
       {seguro ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <span /><span />
-      {showConferido && <span title="Já conferido">✓</span>}
+      {showConferido && (
+        <input
+          type="checkbox"
+          className="conferido-check"
+          checked={!!todosConferidos}
+          onChange={(e) => onToggleTodos(e.target.checked)}
+          title="Marcar/desmarcar todos como conferidos"
+        />
+      )}
     </div>
   );
 }
@@ -1328,7 +1337,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido }) {
+function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido, onToggleConferidoEmLote }) {
   const [sortNovas, setSortNovas] = useState({ key: "data", dir: -1 });
   const [sortProgramadas, setSortProgramadas] = useState({ key: "data", dir: -1 });
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -1407,7 +1416,11 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
         <>
           <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
           <div className="tx-list">
-            <SortableHead sort={sortNovas} setSort={setSortNovas} seguro={seguro} showConferido />
+            <SortableHead
+              sort={sortNovas} setSort={setSortNovas} seguro={seguro} showConferido
+              todosConferidos={novasF.length > 0 && novasF.every((t) => t.conferido)}
+              onToggleTodos={(v) => onToggleConferidoEmLote(novasF.map((t) => t.id), v)}
+            />
             {novasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -1419,7 +1432,11 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
         <>
           <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
           <div className="tx-list">
-            <SortableHead sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} showConferido />
+            <SortableHead
+              sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} showConferido
+              todosConferidos={programadasF.length > 0 && programadasF.every((t) => t.conferido)}
+              onToggleTodos={(v) => onToggleConferidoEmLote(programadasF.map((t) => t.id), v)}
+            />
             {programadasF.map((t) => (
               <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
             ))}
@@ -1484,6 +1501,41 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
           onChange={(e) => onToggleConferido(tx.id, e.target.checked)}
           title="Já conferi com a fatura original"
         />
+      )}
+    </div>
+  );
+}
+
+function EstabelecimentoInput({ value, onChange, merchants }) {
+  const [foco, setFoco] = useState(false);
+  const termo = value.trim().toLowerCase();
+  const sugestoes = termo.length > 0
+    ? merchants.filter((m) => m.name.toLowerCase().includes(termo)).slice(0, 6)
+    : [];
+  return (
+    <div className="estab-autocomplete">
+      <input
+        className="tx-input"
+        placeholder="Estabelecimento"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFoco(true)}
+        onBlur={() => setTimeout(() => setFoco(false), 150)}
+        autoComplete="off"
+      />
+      {foco && sugestoes.length > 0 && (
+        <div className="estab-suggestions">
+          {sugestoes.map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className="estab-suggestion"
+              onMouseDown={(e) => { e.preventDefault(); onChange(m.name); setFoco(false); }}
+            >
+              {m.name}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -1608,7 +1660,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
         </div>
         <div className="approval-field approval-field-grow">
           <label>Estabelecimento</label>
-          <input className="tx-input" list="merchants-list" placeholder="Estabelecimento" value={merchantName} onChange={(e) => handleMerchantChange(e.target.value)} />
+          <EstabelecimentoInput value={merchantName} onChange={handleMerchantChange} merchants={merchants} />
           <span className="tx-raw-hint" title={seguro ? "" : tx.estabelecimento}><Mask value={tx.estabelecimento} active={seguro} /></span>
           {tx.paymentData && (
             <span className="tx-raw-hint" style={{ color: "var(--gold)" }} title={JSON.stringify(tx.paymentData)}>
@@ -2317,6 +2369,10 @@ function Root() {
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
       .approval-field label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
       .approval-field-grow { flex: 1; }
+      .estab-autocomplete { position: relative; }
+      .estab-suggestions { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; max-height: 180px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+      .estab-suggestion { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 12px; font-family: inherit; padding: 7px 10px; cursor: pointer; }
+      .estab-suggestion:hover { background: var(--surface); }
       .approval-field-parcela { min-width: 70px; }
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
