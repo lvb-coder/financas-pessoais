@@ -1744,6 +1744,20 @@ function carregarPdfJs() {
   return pdfjsCarregando;
 }
 
+let papaCarregando = null;
+function carregarPapaParse() {
+  if (window.Papa) return Promise.resolve(window.Papa);
+  if (papaCarregando) return papaCarregando;
+  papaCarregando = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js";
+    script.onload = () => resolve(window.Papa);
+    script.onerror = () => reject(new Error("Não consegui carregar a biblioteca de leitura de CSV."));
+    document.head.appendChild(script);
+  });
+  return papaCarregando;
+}
+
 function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, setError }) {
   const [modo, setModo] = useState("pendente"); // "pendente" | "categorizado"
   const [linhas, setLinhas] = useState(null); // null = nada carregado ainda
@@ -1815,7 +1829,7 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
   // "Pagamento recebido" não é transação (é a quitação da fatura); "Crédito de "X"" é estorno
   // (o valor já vem negativo); "X - Parcela N/M" tem o parcelamento embutido no texto.
   const parseNubankCSV = async (file) => {
-    const Papa = await import("https://cdn.jsdelivr.net/npm/papaparse@5.4.1/+esm");
+    const Papa = await carregarPapaParse();
     const text = await file.text();
     const { data: registros } = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
     const linhas = [];
