@@ -973,6 +973,9 @@ function Dashboard({ userId }) {
       </div>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
+      <div className="modal-hint" style={{ marginBottom: 8 }}>
+        Diagnóstico: {transactions.length} transação(ões) carregada(s) do banco · {categories.length} categorias · {merchants.length} estabelecimentos · usuário {userId?.slice(0, 8)}…
+      </div>
 
       {view === "transacoes" && duplicateGroups.length > 0 && (
         <section className="duplicates-panel">
