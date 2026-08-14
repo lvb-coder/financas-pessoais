@@ -567,9 +567,22 @@ function Dashboard({ userId }) {
         }
         setCategories(cats.map(mapCategory));
 
-        const { data: txs, error: txErr } = await supabase.from("transactions").select("*").order("data", { ascending: false });
-        if (txErr) throw txErr;
-        setTransactions((txs || []).map(mapTransaction));
+        // busca em páginas — o Supabase limita a 1000 linhas por consulta por padrão
+        let txs = [];
+        let pagina = 0;
+        const TAMANHO_PAGINA = 1000;
+        while (true) {
+          const { data: lote, error: txErr } = await supabase
+            .from("transactions")
+            .select("*")
+            .order("data", { ascending: false })
+            .range(pagina * TAMANHO_PAGINA, pagina * TAMANHO_PAGINA + TAMANHO_PAGINA - 1);
+          if (txErr) throw txErr;
+          txs = txs.concat(lote || []);
+          if (!lote || lote.length < TAMANHO_PAGINA) break;
+          pagina++;
+        }
+        setTransactions(txs.map(mapTransaction));
 
         const { data: merch, error: merchErr } = await supabase.from("merchants").select("*").order("name");
         if (merchErr) throw merchErr;
