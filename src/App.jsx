@@ -1907,8 +1907,17 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
     const Papa = await carregarPapaParse();
     const text = await file.text();
     const { data: registros } = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+
+    // a Nubank nomeia o arquivo exportado com a data de download, que cai dentro do mês da
+    // própria fatura (ex: "Nubank_2026-02-08.csv" = fatura de fevereiro/2026) — usa isso como
+    // a competência de todas as linhas, igual fazemos com o "Vencimento" do PDF do Bradesco
+    const nomeMatch = file.name.match(/(\d{4})-(\d{2})-\d{2}/);
+    let competenciaAtual = nomeMatch ? `${nomeMatch[1]}-${nomeMatch[2]}` : null;
+
     const linhas = [];
     let i = 2;
+    let dataMin = null, dataMax = null;
+    const registrosLimpos = [];
     for (const r of registros) {
       const desc = (r.title || "").trim();
       if (!desc || /^pagamento recebido$/i.test(desc)) { i++; continue; }
@@ -1919,8 +1928,35 @@ function ImportModal({ categories, bancos, tipos, userId, onClose, onImported, s
       const parcMatch = estabelecimento.match(/^(.*?)\s*-\s*parcela\s*(\d+)\/(\d+)\s*$/i);
       if (parcMatch) { estabelecimento = parcMatch[1].trim(); parcelaAtual = parseInt(parcMatch[2], 10); parcelaTotal = parseInt(parcMatch[3], 10); }
       const valorMes = parseValorCampo(r.amount);
-      linhas.push(montarLinha(i, { data: parseDataCampo(r.date), estabelecimento, banco: "Nubank", parcelaAtual, parcelaTotal, valorMes }));
+      const data = parseDataCampo(r.date);
+      if (data && (!dataMax || data > dataMax)) dataMax = data;
+      if (data && (!dataMin || data < dataMin)) dataMin = data;
+      registrosLimpos.push({ data, estabelecimento, parcelaAtual, parcelaTotal, valorMes });
       i++;
+    }
+
+    // sem nome de arquivo reconhecível: usa o mês seguinte à transação mais recente (padrão
+    // comum da Nubank — o que aconteceu em dezembro fecha na fatura de janeiro)
+    if (!competenciaAtual && dataMax) {
+      const [ano, mes] = dataMax.split("-");
+      competenciaAtual = mes === "12" ? `${parseInt(ano, 10) + 1}-01` : `${ano}-${String(parseInt(mes, 10) + 1).padStart(2, "0")}`;
+    }
+
+    i = 2;
+    for (const reg of registrosLimpos) {
+      linhas.push(montarLinha(i, { data: reg.data, estabelecimento: reg.estabelecimento, banco: "Nubank", parcelaAtual: reg.parcelaAtual, parcelaTotal: reg.parcelaTotal, valorMes: reg.valorMes, competenciaOverride: competenciaAtual }));
+      i++;
+    }
+
+    // registra os fechamentos automaticamente, igual fazemos com o Bradesco — primeira
+    // transação = fechamento do mês anterior, última = fechamento desse mês
+    if (competenciaAtual && dataMin && dataMax) {
+      const [anoAtualF, mesAtualF] = competenciaAtual.split("-");
+      const competenciaAnterior = mesAtualF === "01" ? `${parseInt(anoAtualF, 10) - 1}-12` : `${anoAtualF}-${String(parseInt(mesAtualF, 10) - 1).padStart(2, "0")}`;
+      setFechamentosParaCriar([
+        { banco: "Nubank", competencia: competenciaAnterior, fechamento: dataMin },
+        { banco: "Nubank", competencia: competenciaAtual, fechamento: dataMax },
+      ]);
     }
     return linhas;
   };
