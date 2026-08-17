@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Component } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2 } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2 } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -240,6 +240,41 @@ function dedupPendentes(list, merchants, patterns) {
   }
   return resultado;
 }
+
+// Resumo (totais) de um conjunto de transações — usado tanto pelo card por banco quanto
+// pelo card "Total" consolidado, pra manter os dois sempre calculando do mesmo jeito.
+function calcularResumoFatura(txs, q, categories, merchants, fechamentosFatura) {
+  const approved = txs.filter((t) => t.status === "categorizado");
+  const isProgramada = (t) => t.parcelaAtual > 1;
+  const programadas = approved.filter(isProgramada);
+  const novas = approved.filter((t) => !isProgramada(t));
+  const novasF = novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura));
+  const programadasF = programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura));
+  const totalNovas = novasF.reduce((s, t) => s + Number(t.valor), 0);
+  const totalProgramadas = programadasF.reduce((s, t) => s + Number(t.valor), 0);
+  const pending = txs.filter((t) => t.status !== "categorizado");
+  return { novas, programadas, novasF, programadasF, totalNovas, totalProgramadas, totalFatura: totalNovas + totalProgramadas, pendingCount: pending.length };
+}
+
+function FaturaTotalCard({ transactions, categories, merchants, fechamentosFatura, search, hidden, seguro }) {
+  const q = search || "";
+  const r = calcularResumoFatura(transactions, q, categories, merchants, fechamentosFatura);
+  if (transactions.length === 0) return null;
+  return (
+    <section className="bank-group bank-group-total">
+      <div className="group-head">
+        <h2><Mask value="Total" active={seguro} /></h2>
+        {r.pendingCount > 0 && <span className="group-total of">{r.pendingCount} pendente(s)</span>}
+      </div>
+      <div className="fatura-summary">
+        <span>{seguro ? <Mask value={`Total da fatura ${currency(r.totalFatura)} (${r.novas.length + r.programadas.length})`} active mono /> : <>Total da fatura <strong><Mask value={currency(r.totalFatura)} active={hidden} mono /></strong> ({r.novas.length + r.programadas.length})</>}</span>
+        <span>{seguro ? <Mask value={`Novas transações ${currency(r.totalNovas)} (${r.novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(r.totalNovas)} active={hidden} mono /></strong> ({r.novas.length})</>}</span>
+        <span>{seguro ? <Mask value={`Parcelas programadas ${currency(r.totalProgramadas)} (${r.programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(r.totalProgramadas)} active={hidden} mono /></strong> ({r.programadas.length})</>}</span>
+      </div>
+    </section>
+  );
+}
+
 
 function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const q = query.trim().toLowerCase();
@@ -986,9 +1021,6 @@ function Dashboard({ userId }) {
       </div>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
-      <div className="modal-hint" style={{ marginBottom: 8 }}>
-        Diagnóstico: {transactions.length} transação(ões) carregada(s) do banco · {categories.length} categorias · {merchants.length} estabelecimentos · usuário {userId?.slice(0, 8)}…
-      </div>
 
       {view === "transacoes" && duplicateGroups.length > 0 && (
         <section className="duplicates-panel">
@@ -1047,6 +1079,15 @@ function Dashboard({ userId }) {
 
       {view === "transacoes" && subView === "mensal" && (
         <>
+          <FaturaTotalCard
+            transactions={monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito")}
+            categories={categories}
+            merchants={merchants}
+            fechamentosFatura={fechamentosFatura}
+            search={search}
+            hidden={hidden}
+            seguro={seguro}
+          />
           {[
             { banco: "Nubank", tipo: "Crédito" },
             { banco: "Bradesco", tipo: "Crédito" },
@@ -1356,6 +1397,8 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
 function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido, onToggleConferidoEmLote }) {
   const [sortNovas, setSortNovas] = useState(() => loadLS(`sortNovas_${banco}_${tipo}`, { key: "data", dir: -1 }));
   const [sortProgramadas, setSortProgramadas] = useState(() => loadLS(`sortProgramadas_${banco}_${tipo}`, { key: "data", dir: -1 }));
+  const [abertoNovas, setAbertoNovas] = useState(false);
+  const [abertoProgramadas, setAbertoProgramadas] = useState(false);
   useEffect(() => { saveLS(`sortNovas_${banco}_${tipo}`, sortNovas); }, [sortNovas, banco, tipo]);
   useEffect(() => { saveLS(`sortProgramadas_${banco}_${tipo}`, sortProgramadas); }, [sortProgramadas, banco, tipo]);
   const all = transactions.filter((t) => t.banco === banco && t.tipo === tipo);
@@ -1433,33 +1476,49 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 
       {novasF.length > 0 && (
         <>
-          <p className="tx-subhead"><Mask value="Novas transações" active={seguro} /></p>
-          <div className="tx-list">
-            <SortableHead
-              sort={sortNovas} setSort={setSortNovas} seguro={seguro} showConferido
-              todosConferidos={novasF.length > 0 && novasF.every((t) => t.conferido)}
-              onToggleTodos={(v) => onToggleConferidoEmLote(novasF.map((t) => t.id), v)}
-            />
-            {novasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
-            ))}
+          <div className="tx-subhead-row">
+            <button className="tx-collapse-btn" onClick={() => setAbertoNovas((v) => !v)}>
+              {abertoNovas ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              <span className="tx-subhead"><Mask value="Novas transações" active={seguro} /></span>
+              <span className="tx-collapse-count">({novasF.length})</span>
+            </button>
           </div>
+          {abertoNovas && (
+            <div className="tx-list">
+              <SortableHead
+                sort={sortNovas} setSort={setSortNovas} seguro={seguro} showConferido
+                todosConferidos={novasF.length > 0 && novasF.every((t) => t.conferido)}
+                onToggleTodos={(v) => onToggleConferidoEmLote(novasF.map((t) => t.id), v)}
+              />
+              {novasF.map((t) => (
+                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              ))}
+            </div>
+          )}
         </>
       )}
 
       {programadasF.length > 0 && (
         <>
-          <p className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></p>
-          <div className="tx-list">
-            <SortableHead
-              sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} showConferido
-              todosConferidos={programadasF.length > 0 && programadasF.every((t) => t.conferido)}
-              onToggleTodos={(v) => onToggleConferidoEmLote(programadasF.map((t) => t.id), v)}
-            />
-            {programadasF.map((t) => (
-              <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
-            ))}
+          <div className="tx-subhead-row">
+            <button className="tx-collapse-btn" onClick={() => setAbertoProgramadas((v) => !v)}>
+              {abertoProgramadas ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              <span className="tx-subhead"><Mask value="Parcelas programadas" active={seguro} /></span>
+              <span className="tx-collapse-count">({programadasF.length})</span>
+            </button>
           </div>
+          {abertoProgramadas && (
+            <div className="tx-list">
+              <SortableHead
+                sort={sortProgramadas} setSort={setSortProgramadas} seguro={seguro} showConferido
+                todosConferidos={programadasF.length > 0 && programadasF.every((t) => t.conferido)}
+                onToggleTodos={(v) => onToggleConferidoEmLote(programadasF.map((t) => t.id), v)}
+              />
+              {programadasF.map((t) => (
+                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+              ))}
+            </div>
+          )}
         </>
       )}
 
@@ -2405,11 +2464,16 @@ function Root() {
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
       .confirm-btn:disabled { opacity: 0.5; cursor: default; }
       .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; }
+      .bank-group-total { border-color: var(--gold); background: rgba(201,162,75,0.06); }
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
       .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; flex-wrap: wrap; gap: 8px; }
       .tx-subhead-row .tx-subhead { margin: 0; }
+      .tx-collapse-btn { display: flex; align-items: center; gap: 6px; background: none; border: none; cursor: pointer; padding: 4px 0; color: var(--muted); }
+      .tx-collapse-btn:hover { color: var(--text); }
+      .tx-collapse-btn .tx-subhead { margin: 0; }
+      .tx-collapse-count { font-size: 11px; color: var(--muted); }
       .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
       .multi-filter { position: relative; }
       .multi-filter-panel { position: absolute; top: calc(100% + 4px); left: 0; right: auto; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: max-content; min-width: 140px; max-width: min(220px, 80vw); max-height: 220px; overflow-y: auto; display: grid; gap: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
