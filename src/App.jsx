@@ -284,6 +284,10 @@ function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const nome = (merch?.name || tx.estabelecimento).toLowerCase();
   if (nome.includes(q)) return true;
 
+  // busca também pelo texto original que veio na fatura, mesmo já tendo um estabelecimento
+  // normalizado vinculado — útil pra achar pelo nome cru do banco
+  if (tx.estabelecimento && tx.estabelecimento.toLowerCase().includes(q)) return true;
+
   const cat = categories.find((c) => c.id === tx.categoryId);
   if (cat && cat.name.toLowerCase().includes(q)) return true;
 
