@@ -2569,7 +2569,8 @@ function Root() {
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
       .tx-list { display: grid; gap: 2px; }
-      .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; }
+      .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; -webkit-user-select: all; user-select: all; -webkit-touch-callout: default; }
+      .tx-row button, .tx-row input { -webkit-user-select: auto; user-select: auto; }
       .tx-row-banco { grid-template-columns: 58px 64px 1.4fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; }
       .tx-row-conferido { grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px 20px; }
       .conferido-check { width: 15px; height: 15px; cursor: pointer; justify-self: center; }
