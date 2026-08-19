@@ -1612,7 +1612,6 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : `${nomeExibido}${nomeOriginalDiferente ? ` (${nomeOriginalDiferente})` : ""}`}>
         <span className="tx-estab-nome">
           <MaskText value={nomeExibido} active={seguro} show={revealed} />
-          {nomeOriginalDiferente && <span className="tx-estab-original"> ({nomeOriginalDiferente})</span>}
         </span>
         {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix no Crédito</span>}
       </span>
@@ -2603,8 +2602,6 @@ function Root() {
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-cell-estab { font-weight: 500; text-align: left; display: flex; align-items: center; overflow: hidden; white-space: nowrap; }
       .tx-estab-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-      .tx-estab-original { display: none; color: var(--muted); font-weight: 400; }
-      .tx-row:hover .tx-estab-original { display: inline; }
       .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
