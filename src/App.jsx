@@ -1564,7 +1564,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
       <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
       {showBanco && <span className="tx-cell"><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : nomeExibido}>
-        <MaskText value={nomeExibido} active={seguro} show={revealed} />
+        <span className="tx-estab-nome"><MaskText value={nomeExibido} active={seguro} show={revealed} /></span>
         {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix no Crédito</span>}
       </span>
       <span className="tx-cell" title={seguro ? "" : (cat?.name || "")}><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
@@ -2545,10 +2545,11 @@ function Root() {
       .tx-row-banco { grid-template-columns: 58px 64px 1.4fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; }
       .tx-row-conferido { grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px 20px; }
       .conferido-check { width: 15px; height: 15px; cursor: pointer; justify-self: center; }
-      .pix-badge { font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; background: rgba(201,162,75,0.18); color: var(--gold); border-radius: 4px; padding: 1px 4px; margin-left: 5px; vertical-align: middle; }
+      .pix-badge { flex-shrink: 0; font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; background: rgba(201,162,75,0.18); color: var(--gold); border-radius: 4px; padding: 1px 4px; margin-left: 5px; vertical-align: middle; }
       .tx-row-head { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 2px; }
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-      .tx-cell-estab { font-weight: 500; text-align: left; }
+      .tx-cell-estab { font-weight: 500; text-align: left; display: flex; align-items: center; overflow: hidden; white-space: nowrap; }
+      .tx-estab-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
