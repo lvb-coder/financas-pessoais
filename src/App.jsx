@@ -242,23 +242,21 @@ function dedupPendentes(list, merchants, patterns) {
 }
 
 // Resumo (totais) de um conjunto de transações — usado tanto pelo card por banco quanto
-// pelo card "Total" consolidado, pra manter os dois sempre calculando do mesmo jeito.
-function calcularResumoFatura(txs, q, categories, merchants, fechamentosFatura) {
+// pelo card "Total" consolidado. Sempre fixo (não muda com a busca) — o resultado da busca
+// aparece num resumo separado, embaixo da seleção mês/todos.
+function calcularResumoFatura(txs) {
   const approved = txs.filter((t) => t.status === "categorizado");
   const isProgramada = (t) => t.parcelaAtual > 1;
   const programadas = approved.filter(isProgramada);
   const novas = approved.filter((t) => !isProgramada(t));
-  const novasF = novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura));
-  const programadasF = programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura));
-  const totalNovas = novasF.reduce((s, t) => s + Number(t.valor), 0);
-  const totalProgramadas = programadasF.reduce((s, t) => s + Number(t.valor), 0);
+  const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
+  const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const pending = txs.filter((t) => t.status !== "categorizado");
-  return { novas, programadas, novasF, programadasF, totalNovas, totalProgramadas, totalFatura: totalNovas + totalProgramadas, pendingCount: pending.length };
+  return { novas, programadas, totalNovas, totalProgramadas, totalFatura: totalNovas + totalProgramadas, pendingCount: pending.length };
 }
 
-function FaturaTotalCard({ transactions, categories, merchants, fechamentosFatura, search, hidden, seguro }) {
-  const q = search || "";
-  const r = calcularResumoFatura(transactions, q, categories, merchants, fechamentosFatura);
+function FaturaTotalCard({ transactions, hidden, seguro }) {
+  const r = calcularResumoFatura(transactions);
   if (transactions.length === 0) return null;
   return (
     <section className="bank-group bank-group-total">
@@ -1083,12 +1081,18 @@ function Dashboard({ userId }) {
 
       {view === "transacoes" && subView === "mensal" && (
         <>
+          {search.trim() && (() => {
+            const creditoDoMes = monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito" && t.status === "categorizado");
+            const achados = creditoDoMes.filter((t) => matchesSearch(t, categories, merchants, search, fechamentosFatura));
+            const totalBusca = achados.reduce((s, t) => s + Number(t.valor), 0);
+            return (
+              <div className="search-summary">
+                Busca: <strong><Mask value={currency(totalBusca)} active={hidden} mono /></strong> em {achados.length} transação(ões) neste mês
+              </div>
+            );
+          })()}
           <FaturaTotalCard
             transactions={monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito")}
-            categories={categories}
-            merchants={merchants}
-            fechamentosFatura={fechamentosFatura}
-            search={search}
             hidden={hidden}
             seguro={seguro}
           />
@@ -1449,9 +1453,9 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const novasF = aplicarOrdenacao(novas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortNovas);
   const programadasF = aplicarOrdenacao(programadas.filter((t) => matchesSearch(t, categories, merchants, q, fechamentosFatura)), sortProgramadas);
 
-  // os totais do resumo acompanham o que está sendo buscado — digitou algo, os números refletem só o que bateu
-  const totalNovas = novasF.reduce((s, t) => s + Number(t.valor), 0);
-  const totalProgramadas = programadasF.reduce((s, t) => s + Number(t.valor), 0);
+  // os totais do resumo ficam fixos (mês inteiro), não mudam com a busca
+  const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
+  const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalFatura = totalNovas + totalProgramadas;
 
   return (
@@ -1539,6 +1543,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
   const nomeExibido = merch?.name || tx.estabelecimento;
+  const nomeOriginalDiferente = merch && merch.name !== tx.estabelecimento ? tx.estabelecimento : null;
   const ehPix = !!tx.pixCredito;
 
   if (editing) {
@@ -1561,17 +1566,20 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
 
   return (
     <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")}>
-      <span className="tx-cell">{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
-      {showBanco && <span className="tx-cell"><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
-      <span className="tx-cell tx-cell-estab" title={seguro ? "" : nomeExibido}>
-        <span className="tx-estab-nome"><MaskText value={nomeExibido} active={seguro} show={revealed} /></span>
+      <span className="tx-cell" title={`${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(0, 4)}`}>{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
+      {showBanco && <span className="tx-cell" title={displayBanco(tx.banco)}><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
+      <span className="tx-cell tx-cell-estab" title={seguro ? "" : `${nomeExibido}${nomeOriginalDiferente ? ` (${nomeOriginalDiferente})` : ""}`}>
+        <span className="tx-estab-nome">
+          <MaskText value={nomeExibido} active={seguro} show={revealed} />
+          {nomeOriginalDiferente && <span className="tx-estab-original"> ({nomeOriginalDiferente})</span>}
+        </span>
         {ehPix && <span className="pix-badge" title="Pix no Crédito">Pix no Crédito</span>}
       </span>
       <span className="tx-cell" title={seguro ? "" : (cat?.name || "")}><MaskText value={cat?.name || "—"} active={seguro} show={revealed} /></span>
-      <span className="tx-cell">{competencia(tx, fechamentosFatura)}</span>
-      <span className="tx-cell">{tx.parcelaAtual}/{tx.parcelaTotal}</span>
-      <span className="tx-cell tx-cell-mono"><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
-      <span className="tx-cell tx-cell-mono"><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
+      <span className="tx-cell" title={competencia(tx, fechamentosFatura)}>{competencia(tx, fechamentosFatura)}</span>
+      <span className="tx-cell" title={`Parcela ${tx.parcelaAtual} de ${tx.parcelaTotal}`}>{tx.parcelaAtual}/{tx.parcelaTotal}</span>
+      <span className="tx-cell tx-cell-mono" title={hidden || seguro ? "" : currency(tx.valor * tx.parcelaTotal)}><MaskText value={currency(tx.valor * tx.parcelaTotal)} active={hidden} show={revealed} mono /></span>
+      <span className="tx-cell tx-cell-mono" title={hidden || seguro ? "" : currency(tx.valor)}><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
       {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
       <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
@@ -2506,6 +2514,8 @@ function Root() {
       .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; }
       .bank-group-total { border-color: var(--gold); background: rgba(201,162,75,0.06); }
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+      .search-summary { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; margin-bottom: 14px; }
+      .search-summary strong { color: var(--gold); font-family: 'IBM Plex Mono', monospace; margin: 0 2px; }
       .fatura-summary strong { color: var(--text); font-family: 'IBM Plex Mono', monospace; margin-left: 4px; }
       .tx-subhead { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 16px 0 6px; }
       .tx-subhead-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 6px; flex-wrap: wrap; gap: 8px; }
@@ -2550,6 +2560,7 @@ function Root() {
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-cell-estab { font-weight: 500; text-align: left; display: flex; align-items: center; overflow: hidden; white-space: nowrap; }
       .tx-estab-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+      .tx-estab-original { color: var(--muted); font-weight: 400; }
       .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
