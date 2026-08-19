@@ -1564,8 +1564,26 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
     );
   }
 
+  const copiarFormatado = (e) => {
+    const textoSelecionado = window.getSelection()?.toString() || "";
+    if (!textoSelecionado.trim()) return; // nada selecionado dentro da linha, deixa o padrão do navegador
+    e.preventDefault();
+    const nomeComPix = ehPix ? `${nomeExibido} - Pix no Crédito` : nomeExibido;
+    const texto = [
+      `Data: ${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(2, 4)}`,
+      `Cartão: ${displayBanco(tx.banco)}`,
+      `Estabelecimento: ${nomeComPix}`,
+      `Categoria: ${cat?.name || "—"}`,
+      `Fatura: ${competencia(tx, fechamentosFatura)}`,
+      `Parcela: ${tx.parcelaAtual}/${tx.parcelaTotal}`,
+      `Valor total: ${currency(tx.valor * tx.parcelaTotal)}`,
+      `Valor/mês: ${currency(tx.valor)}`,
+    ].join("\n");
+    e.clipboardData.setData("text/plain", texto);
+  };
+
   return (
-    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")}>
+    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")} onCopy={copiarFormatado}>
       <span className="tx-cell" title={`${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(0, 4)}`}>{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
       {showBanco && <span className="tx-cell" title={displayBanco(tx.banco)}><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : `${nomeExibido}${nomeOriginalDiferente ? ` (${nomeOriginalDiferente})` : ""}`}>
