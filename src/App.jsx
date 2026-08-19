@@ -427,6 +427,41 @@ function Dashboard({ userId }) {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState("");
   const [undoStack, setUndoStack] = useState(() => loadLS(`undoStack_${userId}`, []));
+  const [selecionadas, setSelecionadas] = useState(() => new Set());
+  const toggleSelecionada = (id) => {
+    setSelecionadas((prev) => {
+      const novo = new Set(prev);
+      if (novo.has(id)) novo.delete(id); else novo.add(id);
+      return novo;
+    });
+  };
+  const limparSelecao = () => setSelecionadas(new Set());
+  const formatarTx = (tx) => {
+    const merch = merchants.find((m) => m.id === tx.merchantId);
+    const cat = categories.find((c) => c.id === tx.categoryId);
+    const nome = merch?.name || tx.estabelecimento;
+    const nomeComPix = tx.pixCredito ? `${nome} - Pix no Crédito` : nome;
+    return [
+      `Data: ${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(2, 4)}`,
+      `Cartão: ${displayBanco(tx.banco)}`,
+      `Estabelecimento: ${nomeComPix}`,
+      `Categoria: ${cat?.name || "—"}`,
+      `Fatura: ${competencia(tx, fechamentosFatura)}`,
+      `Parcela: ${tx.parcelaAtual}/${tx.parcelaTotal}`,
+      `Valor total: ${currency(tx.valor * tx.parcelaTotal)}`,
+      `Valor/mês: ${currency(tx.valor)}`,
+    ].join("\n");
+  };
+  const copiarSelecionadas = async () => {
+    const selecionadasList = transactions.filter((t) => selecionadas.has(t.id));
+    const texto = selecionadasList.map(formatarTx).join("\n\n");
+    try {
+      await navigator.clipboard.writeText(texto);
+    } catch {
+      setError("Não consegui copiar — tenta selecionar e usar Ctrl+C manualmente.");
+    }
+  };
+
   const [redoStack, setRedoStack] = useState(() => loadLS(`redoStack_${userId}`, []));
   const [desfazendo, setDesfazendo] = useState(false);
   const MAX_HISTORICO = 20;
@@ -1023,6 +1058,13 @@ function Dashboard({ userId }) {
       </div>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
+      {selecionadas.size > 0 && (
+        <div className="selecao-bar">
+          <span>{selecionadas.size} selecionada(s)</span>
+          <button className="submit-btn" style={{ padding: "6px 14px" }} onClick={copiarSelecionadas}>Copiar</button>
+          <button className="ledger-remove" onClick={limparSelecao} title="Limpar seleção"><X size={16} /></button>
+        </div>
+      )}
 
       {view === "transacoes" && duplicateGroups.length > 0 && (
         <section className="duplicates-panel">
@@ -1119,6 +1161,8 @@ function Dashboard({ userId }) {
               onRemove={removeTransaction}
               onToggleConferido={toggleConferido}
               onToggleConferidoEmLote={toggleConferidoEmLote}
+              selecionadas={selecionadas}
+              onToggleSelecionada={toggleSelecionada}
             />
           ))}
         </>
@@ -1142,6 +1186,8 @@ function Dashboard({ userId }) {
           onIgnore={removeTransaction}
           onRevert={rejectTransaction}
           onRemove={removeTransaction}
+          selecionadas={selecionadas}
+          onToggleSelecionada={toggleSelecionada}
         />
       )}
 
@@ -1256,6 +1302,7 @@ function SortableHead({ sort, setSort, seguro, showBanco, showConferido, todosCo
   const parcelamentoTitle = sort.key === "parcelaTotal" ? "Ordenando por quantidade de parcelas" : "Ordenando por número da parcela atual";
   return (
     <div className={"tx-row tx-row-head" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")}>
+      <span />
       {cols.map((c) => (
         <button key={c.key} className={"tx-head-btn" + (c.key === "estabelecimento" ? " tx-head-btn-left" : "")} onClick={() => click(c.key)}>
           <MaskText value={c.label} active={seguro} show={revealed} />{arrow(c.key)}
@@ -1310,7 +1357,7 @@ function MultiFilter({ label, options, selected, onChange, seguro }) {
   );
 }
 
-function GeralView({ transactions, categories, merchants, patterns, fechamentosFatura, hidden, seguro, search, filtros, setFiltros, sort, setSort, onApprove, onIgnore, onRevert, onRemove }) {
+function GeralView({ transactions, categories, merchants, patterns, fechamentosFatura, hidden, seguro, search, filtros, setFiltros, sort, setSort, onApprove, onIgnore, onRevert, onRemove, selecionadas, onToggleSelecionada }) {
   const todasCredito = transactions.filter((t) => t.tipo === "Crédito" && t.status !== "excluida");
   const all = todasCredito.filter((t) => t.status === "categorizado");
   const pending = todasCredito.filter((t) => t.status !== "categorizado");
@@ -1394,7 +1441,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
         <div className="tx-list">
           <SortableHead sort={sort} setSort={setSort} seguro={seguro} showBanco />
           {ordenados.map((t) => (
-            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showYear showBanco onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+            <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showYear showBanco onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} selecionada={selecionadas.has(t.id)} onToggleSelecionada={onToggleSelecionada} />
           ))}
         </div>
       )}
@@ -1402,7 +1449,7 @@ function GeralView({ transactions, categories, merchants, patterns, fechamentosF
   );
 }
 
-function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido, onToggleConferidoEmLote }) {
+function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, categories, merchants, patterns, fechamentosFatura, search, hidden, seguro, onApprove, onIgnore, onRevert, onRemove, onToggleConferido, onToggleConferidoEmLote, selecionadas, onToggleSelecionada }) {
   const [sortNovas, setSortNovas] = useState(() => loadLS(`sortNovas_${banco}_${tipo}`, { key: "data", dir: -1 }));
   const [sortProgramadas, setSortProgramadas] = useState(() => loadLS(`sortProgramadas_${banco}_${tipo}`, { key: "data", dir: -1 }));
   const [abertoNovas, setAbertoNovas] = useState(false);
@@ -1499,7 +1546,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
                 onToggleTodos={(v) => onToggleConferidoEmLote(novasF.map((t) => t.id), v)}
               />
               {novasF.map((t) => (
-                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} selecionada={selecionadas.has(t.id)} onToggleSelecionada={onToggleSelecionada} />
               ))}
             </div>
           )}
@@ -1523,7 +1570,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
                 onToggleTodos={(v) => onToggleConferidoEmLote(programadasF.map((t) => t.id), v)}
               />
               {programadasF.map((t) => (
-                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} />
+                <DisplayRow key={t.id} tx={t} categories={categories} merchants={merchants} patterns={patterns} fechamentosFatura={fechamentosFatura} hidden={hidden} seguro={seguro} showConferido onToggleConferido={onToggleConferido} onApprove={onApprove} onRevert={onRevert} onRemove={onRemove} selecionada={selecionadas.has(t.id)} onToggleSelecionada={onToggleSelecionada} />
               ))}
             </div>
           )}
@@ -1537,7 +1584,7 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   );
 }
 
-function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, showBanco, showConferido, onToggleConferido, onApprove, onRevert, onRemove }) {
+function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, showBanco, showConferido, onToggleConferido, onApprove, onRevert, onRemove, selecionada, onToggleSelecionada }) {
   const [editing, setEditing] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const merch = merchants.find((m) => m.id === tx.merchantId);
@@ -1583,7 +1630,15 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   };
 
   return (
-    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")} onCopy={copiarFormatado}>
+    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "") + (selecionada ? " tx-row-selecionada" : "")} onCopy={copiarFormatado}>
+      <input
+        type="checkbox"
+        className="tx-select-check"
+        checked={!!selecionada}
+        onChange={() => onToggleSelecionada(tx.id)}
+        onClick={(e) => e.stopPropagation()}
+        title="Selecionar pra copiar junto com outras"
+      />
       <span className="tx-cell" title={`${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(0, 4)}`}>{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
       {showBanco && <span className="tx-cell" title={displayBanco(tx.banco)}><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : `${nomeExibido}${nomeOriginalDiferente ? ` (${nomeOriginalDiferente})` : ""}`}>
@@ -2515,6 +2570,7 @@ function Root() {
       .month-nav button { background: none; border: none; color: var(--text); cursor: pointer; display: flex; padding: 2px; }
       .banner { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
       .banner-error { background: rgba(193,97,61,0.15); border: 1px solid var(--warn); color: var(--warn); }
+      .selecao-bar { position: sticky; top: 8px; z-index: 20; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--gold); border-radius: 10px; padding: 8px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
       .banner-pending { background: rgba(201,162,75,0.14); border: 1px solid var(--gold); color: var(--gold); }
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
@@ -2569,17 +2625,19 @@ function Root() {
       .approval-actions { display: flex; gap: 6px; margin-left: auto; align-items: center; }
       .tx-valor-total { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 13px; padding: 6px 0; display: block; }
       .tx-list { display: grid; gap: 2px; }
-      .tx-row { display: grid; grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; -webkit-user-select: all; user-select: all; -webkit-touch-callout: default; }
+      .tx-row { display: grid; grid-template-columns: 20px 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; align-items: center; gap: 4px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 11px; min-width: 0; -webkit-user-select: all; user-select: all; -webkit-touch-callout: default; }
       .tx-row button, .tx-row input { -webkit-user-select: auto; user-select: auto; }
-      .tx-row-banco { grid-template-columns: 58px 64px 1.4fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; }
-      .tx-row-conferido { grid-template-columns: 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px 20px; }
+      .tx-row-banco { grid-template-columns: 20px 58px 64px 1.4fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px; }
+      .tx-row-conferido { grid-template-columns: 20px 58px 1.5fr 1fr 0.7fr 0.6fr 0.8fr 0.8fr 18px 18px 18px 20px; }
+      .tx-select-check { width: 14px; height: 14px; cursor: pointer; justify-self: center; }
       .conferido-check { width: 15px; height: 15px; cursor: pointer; justify-self: center; }
       .pix-badge { flex-shrink: 0; font-size: 8px; text-transform: uppercase; letter-spacing: 0.03em; background: rgba(201,162,75,0.18); color: var(--gold); border-radius: 4px; padding: 1px 4px; margin-left: 5px; vertical-align: middle; }
       .tx-row-head { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 2px; }
       .tx-cell { text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-cell-estab { font-weight: 500; text-align: left; display: flex; align-items: center; overflow: hidden; white-space: nowrap; }
       .tx-estab-nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-      .tx-estab-original { color: var(--muted); font-weight: 400; }
+      .tx-estab-original { display: none; color: var(--muted); font-weight: 400; }
+      .tx-row:hover .tx-estab-original, .tx-row-selecionada .tx-estab-original { display: inline; }
       .tx-cell-mono { font-family: 'IBM Plex Mono', monospace; }
       .tx-head-btn { background: none; border: none; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer; padding: 0; font-family: inherit; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
       .tx-head-btn:hover { color: var(--text); }
