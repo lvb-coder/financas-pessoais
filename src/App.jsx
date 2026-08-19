@@ -252,7 +252,9 @@ function calcularResumoFatura(txs) {
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const pending = txs.filter((t) => t.status !== "categorizado");
-  return { novas, programadas, totalNovas, totalProgramadas, totalFatura: totalNovas + totalProgramadas, pendingCount: pending.length };
+  const pix = approved.filter((t) => t.pixCredito);
+  const totalPix = pix.reduce((s, t) => s + Number(t.valor), 0);
+  return { novas, programadas, pix, totalNovas, totalProgramadas, totalPix, totalFatura: totalNovas + totalProgramadas, pendingCount: pending.length };
 }
 
 function FaturaTotalCard({ transactions, hidden, seguro }) {
@@ -268,6 +270,9 @@ function FaturaTotalCard({ transactions, hidden, seguro }) {
         <span>{seguro ? <Mask value={`Total da fatura ${currency(r.totalFatura)} (${r.novas.length + r.programadas.length})`} active mono /> : <>Total da fatura <strong><Mask value={currency(r.totalFatura)} active={hidden} mono /></strong> ({r.novas.length + r.programadas.length})</>}</span>
         <span>{seguro ? <Mask value={`Novas transações ${currency(r.totalNovas)} (${r.novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(r.totalNovas)} active={hidden} mono /></strong> ({r.novas.length})</>}</span>
         <span>{seguro ? <Mask value={`Parcelas programadas ${currency(r.totalProgramadas)} (${r.programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(r.totalProgramadas)} active={hidden} mono /></strong> ({r.programadas.length})</>}</span>
+        {r.pix.length > 0 && (
+          <span>{seguro ? <Mask value={`Pix no Crédito ${currency(r.totalPix)} (${r.pix.length})`} active mono /> : <>Pix no Crédito <strong><Mask value={currency(r.totalPix)} active={hidden} mono /></strong> ({r.pix.length})</>}</span>
+        )}
       </div>
     </section>
   );
@@ -1498,6 +1503,8 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
   const totalNovas = novas.reduce((s, t) => s + Number(t.valor), 0);
   const totalProgramadas = programadas.reduce((s, t) => s + Number(t.valor), 0);
   const totalFatura = totalNovas + totalProgramadas;
+  const pix = approved.filter((t) => t.pixCredito);
+  const totalPix = pix.reduce((s, t) => s + Number(t.valor), 0);
 
   return (
     <section className="bank-group">
@@ -1510,6 +1517,9 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
         <span>{seguro ? <Mask value={`Total da fatura ${currency(totalFatura)} (${approved.length})`} active mono /> : <>Total da fatura <strong><Mask value={currency(totalFatura)} active={hidden} mono /></strong> ({approved.length})</>}</span>
         <span>{seguro ? <Mask value={`Novas transações ${currency(totalNovas)} (${novas.length})`} active mono /> : <>Novas transações <strong><Mask value={currency(totalNovas)} active={hidden} mono /></strong> ({novas.length})</>}</span>
         <span>{seguro ? <Mask value={`Parcelas programadas ${currency(totalProgramadas)} (${programadas.length})`} active mono /> : <>Parcelas programadas <strong><Mask value={currency(totalProgramadas)} active={hidden} mono /></strong> ({programadas.length})</>}</span>
+        {pix.length > 0 && (
+          <span>{seguro ? <Mask value={`Pix no Crédito ${currency(totalPix)} (${pix.length})`} active mono /> : <>Pix no Crédito <strong><Mask value={currency(totalPix)} active={hidden} mono /></strong> ({pix.length})</>}</span>
+        )}
       </div>
 
       {pendingF.length > 0 && (
