@@ -761,7 +761,7 @@ function Dashboard({ userId }) {
 
   // Aprova (ou edita) uma transação: identifica o estabelecimento e já define a categoria, tudo de uma vez.
   // Funciona tanto pra aprovar uma pendente quanto pra editar uma já aprovada — sem mudar o status nesse segundo caso.
-  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito, banco }) => {
+  const resolveApproval = async (tx, { merchantName, categoryId, competenciaOverride, parcelaAtual, parcelaTotal, valor, data, pixCredito, banco, escopo }) => {
     const name = titleCase(merchantName.trim());
     if (!name || !categoryId) return;
     registrarAntesDe(`Aprovar/editar "${merchantName.trim()}"`);
@@ -798,22 +798,27 @@ function Dashboard({ userId }) {
       return t;
     }));
 
-    // Ao editar uma parcela já aprovada (data, categoria/estabelecimento ou número da parcela),
-    // propaga a mudança pras outras parcelas da mesma série — vale pra qualquer compra parcelada.
-    // Parcelas ANTERIORES à que está sendo editada já aconteceram — só a categoria/estabelecimento
-    // delas acompanha (pra manter a série toda categorizada igual), a data/fatura delas não muda.
-    // Só as parcelas a partir da posição original da que está sendo editada (inclusive) deslizam
-    // junto com ela.
+    // Escopo da edição, escolhido no card:
+    // - "so_esta": não mexe em mais nenhuma parcela.
+    // - "seguintes" (padrão de sempre): categoria/estabelecimento acompanham a série toda; já
+    //   data/fatura/número só deslizam a partir da posição original da parcela editada (inclusive).
+    // - "todas": categoria/estabelecimento/valor/data/fatura passam a ser os MESMOS em toda a
+    //   série, sem deslizar — útil quando o banco jogou todas as parcelas pra uma fatura só
+    //   (ex: compra cancelada/estornada).
     const wasApproved = tx.status === "categorizado";
-    if (wasApproved) {
+    if (wasApproved && escopo !== "so_esta") {
       const parcelaOriginal = tx.parcelaAtual || parcelaAtual;
       const deltaParcela = parcelaAtual - parcelaOriginal;
       const siblings = transactions.filter((t) => t.id !== tx.id && (t.origemId || t.id) === origemId);
       for (const s of siblings) {
-        const seguePraFrente = s.parcelaAtual >= parcelaOriginal;
-        const novaParcela = seguePraFrente ? s.parcelaAtual + deltaParcela : s.parcelaAtual;
+        const seguePraFrente = escopo === "todas" ? true : s.parcelaAtual >= parcelaOriginal;
         const upd = { category_id: categoryId, merchant_id: merchant.id, parcela_total: parcelaTotal, pix_credito: !!pixCredito };
-        if (seguePraFrente) {
+        if (escopo === "todas") {
+          upd.valor = valor;
+          upd.data = dataFinal;
+          if (competenciaOverride) upd.competencia_override = competenciaOverride;
+        } else if (seguePraFrente) {
+          const novaParcela = s.parcelaAtual + deltaParcela;
           upd.parcela_atual = novaParcela;
           upd.data = dataFinal;
           if (competenciaOverride) upd.competencia_override = addFatura(competenciaOverride, novaParcela - parcelaAtual);
@@ -825,6 +830,12 @@ function Dashboard({ userId }) {
         setTransactions((prev) => prev.map((t) => {
           const s = siblings.find((x) => x.id === t.id);
           if (!s) return t;
+          if (escopo === "todas") {
+            return {
+              ...t, categoryId, merchantId: merchant.id, parcelaTotal, pixCredito: !!pixCredito, valor, data: dataFinal,
+              ...(competenciaOverride ? { competenciaOverride } : {}),
+            };
+          }
           const seguePraFrente = s.parcelaAtual >= parcelaOriginal;
           const novaParcela = seguePraFrente ? s.parcelaAtual + deltaParcela : s.parcelaAtual;
           return {
@@ -925,19 +936,15 @@ function Dashboard({ userId }) {
   };
 
   // "Excluir" agora manda pra lixeira em vez de apagar de vez
-  const removeTransaction = async (id) => {
+  const removeTransaction = async (id, escopo = "so_esta") => {
     registrarAntesDe("Excluir transação");
     const tx = transactions.find((t) => t.id === id);
     let ids = [id];
-    if (tx && tx.status === "categorizado" && tx.merchantId) {
-      const isPix = !!tx.pixCredito;
+    if (tx && tx.status === "categorizado" && escopo !== "so_esta") {
       const origemIdGroup = tx.origemId || tx.id;
       const relacionadas = transactions.filter((t) =>
-        t.id !== tx.id && t.status !== "excluida" &&
-        (
-          (t.origemId || t.id) === origemIdGroup ||
-          (isPix && t.merchantId === tx.merchantId && t.banco === tx.banco && t.tipo === tx.tipo && Math.abs(t.valor - tx.valor) < 0.005)
-        )
+        t.id !== tx.id && t.status !== "excluida" && (t.origemId || t.id) === origemIdGroup &&
+        (escopo === "todas" || t.parcelaAtual >= tx.parcelaAtual)
       );
       if (relacionadas.length > 0) ids = [id, ...relacionadas.map((t) => t.id)];
     }
@@ -1593,11 +1600,19 @@ function BankGroupSection({ banco, tipo, transactions, allTransactionsGlobal, ca
 function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hidden, seguro, showYear, showBanco, showConferido, onToggleConferido, onApprove, onRevert, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [revealed, setRevealed] = useState(false);
+  const [confirmandoExcluir, setConfirmandoExcluir] = useState(false);
+  const [escopoExcluir, setEscopoExcluir] = useState("so_esta");
   const merch = merchants.find((m) => m.id === tx.merchantId);
   const cat = categories.find((c) => c.id === tx.categoryId);
   const nomeExibido = merch?.name || tx.estabelecimento;
   const nomeOriginalDiferente = merch && merch.name !== tx.estabelecimento ? tx.estabelecimento : null;
   const ehPix = !!tx.pixCredito;
+  const parcelada = tx.status === "categorizado" && tx.parcelaTotal > 1;
+
+  const clicarExcluir = () => {
+    if (parcelada) setConfirmandoExcluir(true);
+    else onRemove(tx.id);
+  };
 
   if (editing) {
     return (
@@ -1618,7 +1633,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
   }
 
   return (
-    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")} data-tx-id={tx.id}>
+    <div className={"tx-row" + (showBanco ? " tx-row-banco" : "") + (showConferido ? " tx-row-conferido" : "")} data-tx-id={tx.id} style={{ position: confirmandoExcluir ? "relative" : undefined }}>
       <span className="tx-cell" title={`${tx.data.slice(8, 10)}/${tx.data.slice(5, 7)}/${tx.data.slice(0, 4)}`}>{tx.data.slice(8, 10)}/{tx.data.slice(5, 7)}/{tx.data.slice(2, 4)}</span>
       {showBanco && <span className="tx-cell" title={displayBanco(tx.banco)}><Mask value={displayBanco(tx.banco)} active={seguro} /></span>}
       <span className="tx-cell tx-cell-estab" title={seguro ? "" : `${nomeExibido}${nomeOriginalDiferente ? ` (${nomeOriginalDiferente})` : ""}`}>
@@ -1634,7 +1649,7 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
       <span className="tx-cell tx-cell-mono" title={hidden || seguro ? "" : currency(tx.valor)}><MaskText value={currency(tx.valor)} active={hidden} show={revealed} mono /></span>
       {(hidden || seguro) ? <RevealButton onHoldChange={setRevealed} small /> : <span />}
       <button className="ledger-remove" onClick={() => setEditing(true)} aria-label="Editar" title="Editar sem voltar pra pendentes"><Pencil size={14} /></button>
-      <button className="ledger-remove" onClick={() => onRemove(tx.id)} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
+      <button className="ledger-remove" onClick={clicarExcluir} aria-label="Excluir" title="Excluir permanentemente"><X size={14} /></button>
       {showConferido && (
         <input
           type="checkbox"
@@ -1643,6 +1658,18 @@ function DisplayRow({ tx, categories, merchants, patterns, fechamentosFatura, hi
           onChange={(e) => onToggleConferido(tx.id, e.target.checked)}
           title="Já conferi com a fatura original"
         />
+      )}
+      {confirmandoExcluir && (
+        <div className="excluir-popup">
+          <p>Excluir qual parcela?</p>
+          <label><input type="radio" name={`excl-${tx.id}`} checked={escopoExcluir === "so_esta"} onChange={() => setEscopoExcluir("so_esta")} /> Só esta parcela</label>
+          <label><input type="radio" name={`excl-${tx.id}`} checked={escopoExcluir === "seguintes"} onChange={() => setEscopoExcluir("seguintes")} /> Esta e as seguintes</label>
+          <label><input type="radio" name={`excl-${tx.id}`} checked={escopoExcluir === "todas"} onChange={() => setEscopoExcluir("todas")} /> Todas as parcelas</label>
+          <div className="excluir-popup-actions">
+            <button className="submit-btn" style={{ padding: "5px 12px" }} onClick={() => { onRemove(tx.id, escopoExcluir); setConfirmandoExcluir(false); }}>Excluir</button>
+            <button className="ledger-remove" onClick={() => setConfirmandoExcluir(false)}>Cancelar</button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1694,6 +1721,7 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const [parcelaAtual, setParcelaAtual] = useState(tx.parcelaAtual > 1 ? tx.parcelaAtual : parcelaDetectada.atual);
   const [parcelaTotal, setParcelaTotal] = useState(tx.parcelaTotal > 1 ? tx.parcelaTotal : parcelaDetectada.total);
   const [valorMes, setValorMes] = useState(String(tx.valor).replace(".", ","));
+  const [escopo, setEscopo] = useState("so_esta");
   const faturaAutomatica = competencia(tx, fechamentosFatura);
   const valorMesNum = parseFloat(valorMes.replace(",", ".")) || 0;
 
@@ -1761,8 +1789,8 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
   const submit = () => {
     onApprove(tx, {
       merchantName: merchantName.trim(), categoryId,
-      competenciaOverride: fatura !== faturaAutomatica ? fatura : null,
-      parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito, banco,
+      competenciaOverride: (escopo === "todas" || fatura !== faturaAutomatica) ? fatura : null,
+      parcelaAtual, parcelaTotal, valor: valorMesNum, data, pixCredito, banco, escopo,
     });
   };
 
@@ -1848,6 +1876,16 @@ function ApprovalRow({ tx, categories, merchants, patterns, fechamentosFatura, a
           <label>Valor Total</label>
           <span className="tx-valor-total"><Mask value={currency(valorMesNum * parcelaTotal)} active={hidden} mono /></span>
         </div>
+        {mode === "editing" && parcelaTotal > 1 && (
+          <div className="approval-field approval-field-grow">
+            <label>Aplicar a</label>
+            <div className="escopo-radios">
+              <label><input type="radio" name={`escopo-${tx.id}`} checked={escopo === "so_esta"} onChange={() => setEscopo("so_esta")} /> Só esta parcela</label>
+              <label><input type="radio" name={`escopo-${tx.id}`} checked={escopo === "seguintes"} onChange={() => setEscopo("seguintes")} /> Esta e as seguintes</label>
+              <label><input type="radio" name={`escopo-${tx.id}`} checked={escopo === "todas"} onChange={() => setEscopo("todas")} /> Todas as parcelas</label>
+            </div>
+          </div>
+        )}
         <div className="approval-actions">
           <button className="confirm-btn" disabled={!merchantName.trim()} onClick={submit}>
             <Check size={14} />
@@ -2650,6 +2688,12 @@ function Root() {
       .approval-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
       .approval-field label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
       .approval-field-grow { flex: 1; }
+      .escopo-radios { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text); }
+      .escopo-radios label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+      .excluir-popup { position: absolute; top: calc(100% + 4px); right: 0; z-index: 40; background: var(--surface-2); border: 1px solid var(--warn); border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 6px; min-width: 200px; font-size: 12px; }
+      .excluir-popup p { margin: 0 0 2px; font-weight: 600; color: var(--text); }
+      .excluir-popup label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text); }
+      .excluir-popup-actions { display: flex; gap: 8px; margin-top: 6px; }
       .estab-autocomplete { position: relative; }
       .estab-suggestions { position: absolute; top: calc(100% + 2px); left: 0; right: 0; z-index: 30; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; max-height: 180px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
       .estab-suggestion { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--text); font-size: 12px; font-family: inherit; padding: 7px 10px; cursor: pointer; }
