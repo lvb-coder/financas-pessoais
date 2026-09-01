@@ -360,32 +360,34 @@ function GraficoLinha({ dados, maxValor }) {
 
   return (
     <div className="grafico-linha-wrap">
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio="none"
-        className="grafico-linha-svg"
-        onMouseMove={moverMouse}
-        onMouseLeave={() => setHoverIdx(null)}
-      >
-        <polygon points={area} fill="var(--gold)" opacity="0.12" />
-        <polyline points={linha} fill="none" stroke="var(--gold)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-        {pHover && (
-          <>
+      <div className="grafico-linha-svg-area">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio="none"
+          className="grafico-linha-svg"
+          onMouseMove={moverMouse}
+          onMouseLeave={() => setHoverIdx(null)}
+        >
+          <polygon points={area} fill="var(--gold)" opacity="0.12" />
+          <polyline points={linha} fill="none" stroke="var(--gold)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+          {pHover && (
             <line x1={pHover.x} y1="0" x2={pHover.x} y2={H} stroke="var(--muted)" strokeWidth="0.4" strokeDasharray="2,2" vectorEffect="non-scaling-stroke" />
-            <circle cx={pHover.x} cy={pHover.y} r="2.2" fill="var(--gold)" stroke="var(--surface)" strokeWidth="0.8" />
-          </>
+          )}
+        </svg>
+        {pHover && (
+          <div className="grafico-linha-ponto" style={{ left: `${pHover.x}%`, top: `${pHover.y}%` }} />
         )}
-      </svg>
+        {pHover && (
+          <div className="grafico-linha-tooltip" style={{ left: `${pHover.x}%` }}>
+            <strong>{pHover.dia}</strong><br />{currency(pHover.valor)}</div>
+        )}
+      </div>
       <div className="grafico-linha-labels">
         {dados.map((d, i) => (
-          (d.dia % 5 === 0 || d.dia === 1) && <span key={i} className="evolucao-label">{d.dia}</span>
+          (d.diaNum % 5 === 0 || d.diaNum === 1) && <span key={i} className="evolucao-label">{d.dia}</span>
         ))}
       </div>
-      {pHover && (
-        <div className="grafico-linha-tooltip" style={{ left: `${pHover.x}%` }}>
-          <strong>Dia {pHover.dia}</strong><br />{currency(pHover.valor)}</div>
-      )}
     </div>
   );
 }
@@ -1459,7 +1461,11 @@ function Dashboard({ userId }) {
       )}
 
       {secao === "inicio" && (() => {
-        const creditoMes = monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito");
+        // Crédito mostra a fatura do mês SEGUINTE ao selecionado — é a que está acumulando os
+        // gastos feitos agora (uma compra de setembro vira fatura de outubro). Débito, quando
+        // existir, reflete o mês selecionado direto, sem esse deslocamento.
+        const competenciaCredito = addFatura(monthKey(cursor), 1);
+        const creditoMes = transactions.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito" && t.status !== "excluida" && competencia(t, fechamentosFatura) === competenciaCredito);
         const resumoCredito = calcularResumoFatura(creditoMes);
         const plannedTotal = totals.essenciais.planned + totals.extras.planned;
         const creditoGasto = resumoCredito.totalFatura;
@@ -1497,21 +1503,27 @@ function Dashboard({ userId }) {
         const qtdParceladoGeral = seriesAbertas.size;
         const pctPagoGeral = totalParceladoGeral > 0 ? (totalPagoGeral / totalParceladoGeral) * 100 : 0;
 
-        // gasto por dia dentro do mês selecionado, pra evolução — usa a DATA REAL da compra
-        // (não a fatura/competência), porque parcelas de compras parceladas mantêm sempre a
-        // data da parcela 1, então usar a fatura faria uma compra antiga "aparecer" num dia
-        // aleatório do mês atual só por coincidência de dia. Ignora estornos (valor negativo)
-        // e soma o valor total de cada compra (não só a fração daquele mês).
-        const mesAtualStr = monthKey(cursor);
-        const diasNoMes = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
-        const gastoPorDia = Array.from({ length: diasNoMes }, (_, i) => {
-          const dia = i + 1;
-          const dataAlvo = `${mesAtualStr}-${String(dia).padStart(2, "0")}`;
-          const soma = transactions
-            .filter((t) => t.status === "categorizado" && t.tipo === "Crédito" && (t.banco === "Nubank" || t.banco === "Bradesco") && t.data === dataAlvo && Number(t.valor) > 0)
-            .reduce((s, t) => s + Number(t.valor) * t.parcelaTotal, 0);
-          return { dia, valor: soma };
-        });
+        // Evolução: usa as datas reais das transações NOVAS (parcela 1) dessa fatura de
+        // crédito — não o mês calendário. Como a fatura de outubro nasce dos gastos de
+        // setembro (às vezes começando ainda em finais de agosto, dependendo do fechamento
+        // de cada cartão), o período real pode cruzar dois meses — por isso a linha do tempo
+        // segue as datas de verdade das compras, não uma grade fixa de 1 a 30/31.
+        // Parcelas programadas (continuação de compras antigas) ficam de fora, porque a data
+        // delas é sempre a da compra original, não representa nada "novo" nesse período.
+        const novasPositivas = resumoCredito.novas.filter((t) => Number(t.valor) > 0);
+        let gastoPorDia = [];
+        if (novasPositivas.length > 0) {
+          const datas = novasPositivas.map((t) => t.data).sort();
+          const dataMin = datas[0], dataMax = datas[datas.length - 1];
+          let cursorDia = new Date(dataMin + "T00:00:00");
+          const fimDia = new Date(dataMax + "T00:00:00");
+          while (cursorDia <= fimDia) {
+            const dataStr = `${cursorDia.getFullYear()}-${String(cursorDia.getMonth() + 1).padStart(2, "0")}-${String(cursorDia.getDate()).padStart(2, "0")}`;
+            const soma = novasPositivas.filter((t) => t.data === dataStr).reduce((s, t) => s + Number(t.valor) * t.parcelaTotal, 0);
+            gastoPorDia.push({ dia: `${String(cursorDia.getDate()).padStart(2, "0")}/${String(cursorDia.getMonth() + 1).padStart(2, "0")}`, diaNum: cursorDia.getDate(), valor: soma });
+            cursorDia.setDate(cursorDia.getDate() + 1);
+          }
+        }
         const maxGastoDia = Math.max(1, ...gastoPorDia.map((d) => d.valor));
 
         return (
@@ -1538,7 +1550,7 @@ function Dashboard({ userId }) {
               </div>
 
               <div className="status-bloco">
-                <p className="modal-hint" style={{ margin: "0 0 6px", fontWeight: 700 }}>Crédito</p>
+                <p className="modal-hint" style={{ margin: "0 0 6px", fontWeight: 700 }}>Crédito — fatura de {monthLabel(new Date(competenciaCredito + "-01T00:00:00"))}</p>
                 <div className="status-geral-grid">
                   <div className="status-geral-item">
                     <span className="status-geral-label">Total gasto</span>
@@ -1577,13 +1589,15 @@ function Dashboard({ userId }) {
                 <h2>Gastos do mês</h2>
                 <span className="group-total"><Mask value={currency(resumoCredito.totalFatura)} active={hidden} mono /></span>
               </div>
-              <p className="modal-hint" style={{ margin: "0 0 8px" }}>Crédito</p>
+              <p className="modal-hint" style={{ margin: "0 0 8px" }}>
+                Crédito — fatura de {monthLabel(new Date(competenciaCredito + "-01T00:00:00"))}
+              </p>
               {["Nubank", "Bradesco"].map((banco) => (
                 <CartaoResumoLinha key={banco} banco={banco} txs={creditoMes.filter((t) => t.banco === banco)} hidden={hidden} seguro={seguro} />
               ))}
               <button className="link-btn" onClick={() => { setSecao("credito"); setView("transacoes"); }}>Ver fatura completa do mês →</button>
 
-              <p className="modal-hint" style={{ margin: "16px 0 8px" }}>Débito</p>
+              <p className="modal-hint" style={{ margin: "16px 0 8px" }}>Débito — {monthLabel(cursor)}</p>
               <p className="empty" style={{ margin: "0 0 8px" }}>Em breve — ainda vamos montar essa parte.</p>
               <button className="link-btn" onClick={() => setSecao("debito")}>Ver fatura completa do mês →</button>
             </section>
@@ -1645,7 +1659,7 @@ function Dashboard({ userId }) {
             </section>
 
             <section className="bank-group">
-              <div className="group-head"><h2>Evolução no mês</h2></div>
+              <div className="group-head"><h2>Evolução — fatura de crédito de {monthLabel(new Date(competenciaCredito + "-01T00:00:00"))}</h2></div>
               <GraficoLinha dados={gastoPorDia} maxValor={maxGastoDia} />
             </section>
 
@@ -3138,6 +3152,8 @@ function Root() {
       .secao-menu-item.active { background: var(--surface-2); color: var(--gold); font-weight: 700; }
       .secao-menu-item:not(.active):hover { background: var(--surface-2); }
       .grafico-linha-wrap { position: relative; }
+      .grafico-linha-svg-area { position: relative; }
+      .grafico-linha-ponto { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--gold); border: 2px solid var(--surface); transform: translate(-50%, -50%); pointer-events: none; box-shadow: var(--shadow); }
       .grafico-linha-svg { width: 100%; height: 130px; overflow: visible; }
       .grafico-linha-svg circle { cursor: pointer; }
       .grafico-linha-labels { display: flex; justify-content: space-between; margin-top: 4px; }
