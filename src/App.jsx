@@ -283,6 +283,7 @@ function CartaoResumoLinha({ banco, txs, hidden, seguro }) {
   const [aberto, setAberto] = useState(false);
   const r = calcularResumoFatura(txs);
   if (txs.length === 0) return null;
+  const pct = (v) => (r.totalFatura > 0 ? (v / r.totalFatura) * 100 : 0);
   return (
     <div className="cartao-resumo-linha">
       <button className="cartao-resumo-head" onClick={() => setAberto((v) => !v)}>
@@ -292,9 +293,9 @@ function CartaoResumoLinha({ banco, txs, hidden, seguro }) {
       </button>
       {aberto && (
         <div className="cartao-resumo-detalhe">
-          <div><span>Novas transações</span><Mask value={currency(r.totalNovas)} active={hidden} mono /></div>
-          <div><span>Parcelas programadas</span><Mask value={currency(r.totalProgramadas)} active={hidden} mono /></div>
-          {r.pix.length > 0 && <div><span>Pix no Crédito</span><Mask value={currency(r.totalPix)} active={hidden} mono /></div>}
+          <div><span>Novas transações</span><span><Mask value={currency(r.totalNovas)} active={hidden} mono /> <span className="cat-pct">({pct(r.totalNovas).toFixed(0)}%)</span></span></div>
+          <div><span>Parcelas programadas</span><span><Mask value={currency(r.totalProgramadas)} active={hidden} mono /> <span className="cat-pct">({pct(r.totalProgramadas).toFixed(0)}%)</span></span></div>
+          {r.pix.length > 0 && <div><span>Pix no Crédito</span><span><Mask value={currency(r.totalPix)} active={hidden} mono /> <span className="cat-pct">({pct(r.totalPix).toFixed(0)}%)</span></span></div>}
         </div>
       )}
     </div>
@@ -1496,11 +1497,19 @@ function Dashboard({ userId }) {
         const qtdParceladoGeral = seriesAbertas.size;
         const pctPagoGeral = totalParceladoGeral > 0 ? (totalPagoGeral / totalParceladoGeral) * 100 : 0;
 
-        // gasto por dia dentro do mês selecionado, pra evolução
+        // gasto por dia dentro do mês selecionado, pra evolução — usa a DATA REAL da compra
+        // (não a fatura/competência), porque parcelas de compras parceladas mantêm sempre a
+        // data da parcela 1, então usar a fatura faria uma compra antiga "aparecer" num dia
+        // aleatório do mês atual só por coincidência de dia. Ignora estornos (valor negativo)
+        // e soma o valor total de cada compra (não só a fração daquele mês).
+        const mesAtualStr = monthKey(cursor);
         const diasNoMes = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
         const gastoPorDia = Array.from({ length: diasNoMes }, (_, i) => {
           const dia = i + 1;
-          const soma = creditoMes.filter((t) => t.status === "categorizado" && parseInt(t.data.slice(8, 10), 10) === dia).reduce((s, t) => s + Number(t.valor), 0);
+          const dataAlvo = `${mesAtualStr}-${String(dia).padStart(2, "0")}`;
+          const soma = transactions
+            .filter((t) => t.status === "categorizado" && t.tipo === "Crédito" && (t.banco === "Nubank" || t.banco === "Bradesco") && t.data === dataAlvo && Number(t.valor) > 0)
+            .reduce((s, t) => s + Number(t.valor) * t.parcelaTotal, 0);
           return { dia, valor: soma };
         });
         const maxGastoDia = Math.max(1, ...gastoPorDia.map((d) => d.valor));
