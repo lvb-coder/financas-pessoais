@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Component } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2, Moon, Sun, User } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2, Moon, Sun, User, Menu } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -279,6 +279,90 @@ function FaturaTotalCard({ transactions, hidden, seguro }) {
 }
 
 
+function CartaoResumoLinha({ banco, txs, hidden, seguro }) {
+  const [aberto, setAberto] = useState(false);
+  const r = calcularResumoFatura(txs);
+  if (txs.length === 0) return null;
+  return (
+    <div className="cartao-resumo-linha">
+      <button className="cartao-resumo-head" onClick={() => setAberto((v) => !v)}>
+        {aberto ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="cartao-resumo-nome"><Mask value={displayBanco(banco)} active={seguro} /></span>
+        <span className="cartao-resumo-valor"><Mask value={currency(r.totalFatura)} active={hidden} mono /></span>
+      </button>
+      {aberto && (
+        <div className="cartao-resumo-detalhe">
+          <div><span>Novas transações</span><Mask value={currency(r.totalNovas)} active={hidden} mono /></div>
+          <div><span>Parcelas programadas</span><Mask value={currency(r.totalProgramadas)} active={hidden} mono /></div>
+          {r.pix.length > 0 && <div><span>Pix no Crédito</span><Mask value={currency(r.totalPix)} active={hidden} mono /></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GrupoLinha({ meta, spent, planned, categoriasDoGrupo, spentByCategory, categorizadas, merchants, hidden, seguro }) {
+  const [aberto, setAberto] = useState(false);
+  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+  const over = planned > 0 && spent > planned;
+  return (
+    <div className="grupo-linha">
+      <button className="grupo-linha-head" onClick={() => setAberto((v) => !v)}>
+        {aberto ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        <span className="dot" style={{ background: meta.color }} />
+        <span className="grupo-linha-nome">{meta.label}</span>
+        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span></span>
+      </button>
+      <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--danger)" : meta.color }} /></div>
+      {aberto && (
+        <div className="grupo-categorias">
+          {categoriasDoGrupo.map((c) => {
+            const spentCat = spentByCategory[c.id] || 0;
+            const txsCategoria = categorizadas.filter((t) => t.categoryId === c.id);
+            return (
+              <CategoriaLinha key={c.id} categoria={c} spent={spentCat} planned={Number(c.limit)} txs={txsCategoria} merchants={merchants} hidden={hidden} seguro={seguro} />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoriaLinha({ categoria, spent, planned, txs, merchants, hidden, seguro }) {
+  const [aberto, setAberto] = useState(false);
+  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+  const over = planned > 0 && spent > planned;
+  return (
+    <div className="categoria-linha">
+      <button className="categoria-linha-head" onClick={() => setAberto((v) => !v)}>
+        {aberto ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        <span className="cat-name"><Mask value={categoria.name} active={seguro} /></span>
+        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span></span>
+      </button>
+      <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--danger)" : "var(--gold)" }} /></div>
+      {aberto && (
+        <div className="categoria-transacoes">
+          {txs.length === 0 ? (
+            <p className="empty" style={{ margin: "6px 0" }}>Nenhuma transação nessa categoria ainda.</p>
+          ) : (
+            txs.map((t) => {
+              const merch = merchants.find((m) => m.id === t.merchantId);
+              return (
+                <div key={t.id} className="categoria-transacao-item">
+                  <span>{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                  <span className="categoria-transacao-nome"><Mask value={merch?.name || t.estabelecimento} active={seguro} /></span>
+                  <span><Mask value={currency(t.valor)} active={hidden} mono /></span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function matchesSearch(tx, categories, merchants, query, fechamentosFatura) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -432,6 +516,7 @@ function Dashboard({ userId }) {
   const [showSettings, setShowSettings] = useState(false);
   const [showConta, setShowConta] = useState(false);
   const [secao, setSecao] = useState(() => loadLS("secao", "inicio"));
+  const [menuAberto, setMenuAberto] = useState(false);
   const [tema, setTema] = useState(() => loadLS("tema", "light"));
   const [bankItems, setBankItems] = useState([]);
   useEffect(() => { saveLS("secao", secao); }, [secao]);
@@ -1039,8 +1124,8 @@ function Dashboard({ userId }) {
     <div className="app" data-theme={tema}>
       <Root />
       <header className="header">
-        <div>
-          <p className="eyebrow"><Mask value="Fase 1 · Consolidação de gastos" active={seguro} /></p>
+        <div className="header-left">
+          <button className="icon-btn menu-btn" onClick={() => setMenuAberto((v) => !v)} aria-label="Menu"><Menu size={20} /></button>
           <h1><Mask value="Minhas finanças" active={seguro} /></h1>
         </div>
         <div className="header-actions">
@@ -1068,20 +1153,24 @@ function Dashboard({ userId }) {
         </div>
       </header>
 
-      <nav className="secao-nav">
-        {[
-          { id: "inicio", label: "Início" },
-          { id: "planejamento", label: "Planejamento" },
-          { id: "credito", label: "Crédito" },
-          { id: "debito", label: "Débito" },
-          { id: "movimentacoes", label: "Movimentações" },
-          { id: "investimentos", label: "Investimentos" },
-        ].map((s) => (
-          <button key={s.id} className={"secao-btn" + (secao === s.id ? " active" : "")} onClick={() => setSecao(s.id)}>
-            {s.label}
-          </button>
-        ))}
-      </nav>
+      {menuAberto && (
+        <div className="menu-backdrop" onClick={() => setMenuAberto(false)}>
+          <nav className="secao-menu" onClick={(e) => e.stopPropagation()}>
+            {[
+              { id: "inicio", label: "Início" },
+              { id: "investimentos", label: "Investimentos" },
+              { id: "planejamento", label: "Planejamento" },
+              { id: "movimentacoes", label: "Movimentações" },
+              { id: "credito", label: "Crédito" },
+              { id: "debito", label: "Débito" },
+            ].map((s) => (
+              <button key={s.id} className={"secao-menu-item" + (secao === s.id ? " active" : "")} onClick={() => { setSecao(s.id); setMenuAberto(false); }}>
+                {s.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+      )}
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
 
@@ -1312,63 +1401,109 @@ function Dashboard({ userId }) {
         const resumoCredito = calcularResumoFatura(creditoMes);
         const plannedTotal = totals.essenciais.planned + totals.extras.planned;
         const spentTotal = totals.essenciais.spent + totals.extras.spent;
+        const disponivel = plannedTotal - spentTotal;
         const pctExecutado = plannedTotal > 0 ? Math.min(999, (spentTotal / plannedTotal) * 100) : 0;
 
-        // últimos 6 meses de gasto total no crédito, pra evolução histórica
-        const meses = [];
-        for (let i = 5; i >= 0; i--) {
-          const d = new Date(cursor.getFullYear(), cursor.getMonth() - i, 1);
-          meses.push({ key: monthKey(d), label: d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "") });
-        }
-        const gastoPorMes = meses.map((m) => {
-          const soma = transactions
-            .filter((t) => t.status === "categorizado" && t.tipo === "Crédito" && competencia(t, fechamentosFatura) === m.key)
-            .reduce((s, t) => s + Number(t.valor), 0);
-          return { ...m, valor: soma };
+        const totalParceladoGeral = transactions
+          .filter((t) => t.status === "categorizado" && t.parcelaAtual > 1)
+          .reduce((s, t) => s + Number(t.valor) * t.parcelaTotal, 0);
+        const qtdParceladoGeral = transactions.filter((t) => t.status === "categorizado" && t.parcelaAtual > 1).length;
+
+        // gasto por dia dentro do mês selecionado, pra evolução
+        const diasNoMes = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+        const gastoPorDia = Array.from({ length: diasNoMes }, (_, i) => {
+          const dia = i + 1;
+          const soma = creditoMes.filter((t) => t.status === "categorizado" && parseInt(t.data.slice(8, 10), 10) === dia).reduce((s, t) => s + Number(t.valor), 0);
+          return { dia, valor: soma };
         });
-        const maxGasto = Math.max(1, ...gastoPorMes.map((m) => m.valor));
+        const maxGastoDia = Math.max(1, ...gastoPorDia.map((d) => d.valor));
 
         return (
           <>
+            <div className="month-nav" style={{ marginBottom: 16 }}>
+              <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} aria-label="Mês anterior"><ChevronLeft size={18} /></button>
+              <span>{monthLabel(cursor)}</span>
+              <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} aria-label="Próximo mês"><ChevronRight size={18} /></button>
+            </div>
+
             {pendingTotalCount > 0 && (
               <div className="banner banner-pending" style={{ cursor: "pointer" }} onClick={() => { setSecao("credito"); setView("transacoes"); }}>
                 <Inbox size={16} /> Você tem {pendingTotalCount} transação(ões) pendente(s) de aprovação
               </div>
             )}
 
-            <FaturaTotalCard transactions={creditoMes} hidden={hidden} seguro={seguro} />
-
+            {/* STATUS GERAL */}
             <section className="bank-group">
-              <div className="group-head"><h2>Débito · {monthLabel(cursor)}</h2></div>
-              <p className="empty" style={{ margin: 0 }}>Em breve — ainda vamos montar essa parte.</p>
-            </section>
-
-            <section className="bank-group">
-              <div className="group-head">
-                <h2>Resumo por categoria · {monthLabel(cursor)}</h2>
-                <span className="group-total">{pctExecutado.toFixed(0)}% executado <span className="of">/ <Mask value={currency(plannedTotal)} active={hidden} mono /></span></span>
+              <div className="group-head"><h2>Status geral</h2></div>
+              <div className="status-geral-grid">
+                <div className="status-geral-item">
+                  <span className="status-geral-label">Total gasto</span>
+                  <span className="status-geral-valor"><Mask value={currency(spentTotal)} active={hidden} mono /></span>
+                </div>
+                <div className="status-geral-item">
+                  <span className="status-geral-label">Disponível</span>
+                  <span className="status-geral-valor" style={{ color: disponivel < 0 ? "var(--danger)" : "var(--ok)" }}><Mask value={currency(disponivel)} active={hidden} mono /></span>
+                </div>
               </div>
-              <div className="cat-bar" style={{ marginBottom: 14 }}>
+              <div className="cat-bar" style={{ marginTop: 12 }}>
                 <div className="cat-bar-fill" style={{ width: `${Math.min(100, pctExecutado)}%`, background: pctExecutado > 100 ? "var(--danger)" : "var(--gold)" }} />
               </div>
-              {Object.entries(GROUPS).map(([key, meta]) => (
-                <div key={key} style={{ marginBottom: 10 }}>
-                  <div className="cat-row-top">
-                    <span className="cat-name" style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
-                    <span className="cat-values"><Mask value={currency(totals[key].spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(totals[key].planned)} active={hidden} mono /></span></span>
-                  </div>
-                </div>
+              <p className="modal-hint" style={{ marginTop: 6 }}>{pctExecutado.toFixed(0)}% do planejado do mês (<Mask value={currency(plannedTotal)} active={hidden} mono />)</p>
+            </section>
+
+            {/* GASTOS DO MÊS */}
+            <section className="bank-group">
+              <div className="group-head">
+                <h2>Gastos do mês</h2>
+                <span className="group-total"><Mask value={currency(resumoCredito.totalFatura)} active={hidden} mono /></span>
+              </div>
+              <p className="modal-hint" style={{ margin: "0 0 8px" }}>Crédito</p>
+              {["Nubank", "Bradesco"].map((banco) => (
+                <CartaoResumoLinha key={banco} banco={banco} txs={creditoMes.filter((t) => t.banco === banco)} hidden={hidden} seguro={seguro} />
               ))}
-              <button className="add-btn" style={{ marginTop: 4 }} onClick={() => setSecao("planejamento")}>Ver por categoria →</button>
+              <button className="link-btn" onClick={() => { setSecao("credito"); setView("transacoes"); }}>Ver fatura completa do mês →</button>
+
+              <p className="modal-hint" style={{ margin: "16px 0 8px" }}>Débito</p>
+              <p className="empty" style={{ margin: "0 0 8px" }}>Em breve — ainda vamos montar essa parte.</p>
+              <button className="link-btn" onClick={() => setSecao("debito")}>Ver fatura completa do mês →</button>
+            </section>
+
+            {qtdParceladoGeral > 0 && (
+              <section className="bank-group">
+                <div className="group-head">
+                  <h2>Compras parceladas</h2>
+                  <span className="group-total"><Mask value={currency(totalParceladoGeral)} active={hidden} mono /></span>
+                </div>
+                <p className="modal-hint" style={{ margin: 0 }}>{qtdParceladoGeral} parcela(s) programada(s), somando o valor total de cada compra em aberto</p>
+              </section>
+            )}
+
+            {/* GASTOS POR CATEGORIA */}
+            <section className="bank-group">
+              <div className="group-head"><h2>Gastos por categoria</h2></div>
+              {Object.entries(GROUPS).map(([key, meta]) => (
+                <GrupoLinha
+                  key={key}
+                  meta={meta}
+                  spent={totals[key].spent}
+                  planned={totals[key].planned}
+                  categoriasDoGrupo={categories.filter((c) => c.group === key)}
+                  spentByCategory={spentByCategory}
+                  categorizadas={categorizadas}
+                  merchants={merchants}
+                  hidden={hidden}
+                  seguro={seguro}
+                />
+              ))}
             </section>
 
             <section className="bank-group">
-              <div className="group-head"><h2>Evolução — últimos 6 meses</h2></div>
+              <div className="group-head"><h2>Evolução no mês</h2></div>
               <div className="evolucao-chart">
-                {gastoPorMes.map((m) => (
-                  <div key={m.key} className="evolucao-bar-wrap">
-                    <div className="evolucao-bar" style={{ height: `${Math.max(4, (m.valor / maxGasto) * 100)}%` }} title={currency(m.valor)} />
-                    <span className="evolucao-label">{m.label}</span>
+                {gastoPorDia.map((d) => (
+                  <div key={d.dia} className="evolucao-bar-wrap">
+                    <div className="evolucao-bar evolucao-bar-dia" style={{ height: `${Math.max(3, (d.valor / maxGastoDia) * 100)}%` }} title={`Dia ${d.dia}: ${currency(d.valor)}`} />
+                    {(d.dia % 5 === 0 || d.dia === 1) && <span className="evolucao-label">{d.dia}</span>}
                   </div>
                 ))}
               </div>
@@ -2833,7 +2968,7 @@ function Root() {
       .app { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', Inter, sans-serif; padding: 28px 20px 60px; max-width: 720px; margin: 0 auto; min-height: 100vh; overflow-x: hidden; box-sizing: border-box; transition: background 0.15s ease, color 0.15s ease; }
       .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
       .eyebrow { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
-      h1 { font-family: 'Fraunces', Georgia, serif; font-size: 28px; margin: 0; font-weight: 600; }
+      h1 { font-size: 28px; margin: 0; font-weight: 600; }
       .header-actions { display: flex; align-items: center; gap: 10px; }
       .privacy-controls { display: flex; gap: 6px; }
       .privacy-btn.active { color: var(--gold); border-color: var(--gold); }
@@ -2855,19 +2990,44 @@ function Root() {
       .banner-error { background: rgba(229,72,77,0.12); border: 1px solid var(--danger); color: var(--danger); }
       .selecao-bar { position: sticky; top: 8px; z-index: 20; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--gold); border-radius: 10px; padding: 8px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
       .banner-pending { background: var(--surface-2); border: 1px solid var(--gold); color: var(--gold); font-weight: 600; }
-      .secao-nav { display: flex; gap: 6px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
-      .secao-btn { flex-shrink: 0; background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 600; padding: 9px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
-      .secao-btn.active { background: var(--gold); color: #FFFFFF; }
-      .secao-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+      .header-left { display: flex; align-items: center; gap: 12px; }
+      .menu-btn { flex-shrink: 0; }
+      .menu-backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.25); }
+      .secao-menu { position: absolute; top: 70px; left: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 32px rgba(0,0,0,0.25); padding: 8px; display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+      .secao-menu-item { text-align: left; background: none; border: none; color: var(--text); font-size: 14px; font-weight: 500; padding: 11px 14px; border-radius: 9px; cursor: pointer; }
+      .secao-menu-item.active { background: var(--surface-2); color: var(--gold); font-weight: 700; }
+      .secao-menu-item:not(.active):hover { background: var(--surface-2); }
       .evolucao-chart { display: flex; align-items: flex-end; gap: 10px; height: 120px; padding-top: 10px; }
       .evolucao-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
       .evolucao-bar { width: 100%; max-width: 32px; background: var(--gold); border-radius: 6px 6px 2px 2px; min-height: 4px; transition: height 0.2s ease; }
       .evolucao-label { font-size: 10px; color: var(--muted); text-transform: capitalize; }
       .banco-conectado-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
       .banco-conectado-item { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--text); }
+      .status-geral-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+      .status-geral-item { display: flex; flex-direction: column; gap: 4px; }
+      .status-geral-label { font-size: 12px; color: var(--muted); }
+      .status-geral-valor { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; }
+      .link-btn { background: none; border: none; color: var(--gold); font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px 0; }
+      .link-btn:hover { text-decoration: underline; }
+      .cartao-resumo-linha { border-bottom: 1px dashed var(--line); padding: 4px 0; }
+      .cartao-resumo-head { width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--text); font-size: 13px; padding: 6px 0; cursor: pointer; }
+      .cartao-resumo-nome { flex: 1; text-align: left; font-weight: 600; }
+      .cartao-resumo-valor { font-family: 'IBM Plex Mono', monospace; }
+      .cartao-resumo-detalhe { display: flex; flex-direction: column; gap: 4px; padding: 2px 0 10px 22px; font-size: 12px; color: var(--muted); }
+      .cartao-resumo-detalhe div { display: flex; justify-content: space-between; }
+      .grupo-linha { margin-bottom: 18px; }
+      .grupo-linha-head { width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--text); padding: 6px 0; cursor: pointer; }
+      .grupo-linha-nome { flex: 1; text-align: left; font-weight: 700; font-size: 14px; }
+      .grupo-categorias { margin: 12px 0 0 20px; padding-left: 10px; border-left: 2px solid var(--line); }
+      .categoria-linha { margin-bottom: 12px; }
+      .categoria-linha-head { width: 100%; display: flex; align-items: center; gap: 6px; background: none; border: none; color: var(--text); padding: 4px 0; cursor: pointer; }
+      .categoria-transacoes { margin: 8px 0 0 19px; display: flex; flex-direction: column; gap: 4px; }
+      .categoria-transacao-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 8px; font-size: 11px; color: var(--muted); padding: 3px 0; }
+      .categoria-transacao-nome { color: var(--text); }
+      .evolucao-bar-dia { max-width: none; width: 100%; }
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-      .section-title { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
+      .section-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
       .view-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
       .subview-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
       .subtab-btn { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
@@ -2965,7 +3125,7 @@ function Root() {
       .group-card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
       .group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
       .group-head .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--group-color); }
-      .group-head h2 { font-family: 'Fraunces', Georgia, serif; font-size: 16px; font-weight: 600; margin: 0; flex: 1; }
+      .group-head h2 { font-size: 16px; font-weight: 600; margin: 0; flex: 1; }
       .group-total { font-family: 'IBM Plex Mono', monospace; font-size: 13px; }
       .of { color: var(--muted); font-weight: 400; }
       .cat-list { display: grid; gap: 12px; }
@@ -2987,7 +3147,7 @@ function Root() {
       .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
       .modal { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; width: 100%; max-width: 380px; display: grid; gap: 14px; max-height: 85vh; overflow-y: auto; }
       .modal-head { display: flex; justify-content: space-between; align-items: center; }
-      .modal-head h3 { font-family: 'Fraunces', Georgia, serif; margin: 0; font-size: 18px; }
+      .modal-head h3 { margin: 0; font-size: 18px; }
       .modal-head button { background: none; border: none; color: var(--muted); cursor: pointer; }
       .modal-hint { font-size: 12px; color: var(--muted); margin: 0; }
       .import-mode-toggle { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
