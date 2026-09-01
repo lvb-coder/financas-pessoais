@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, Component } from "react";
-import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2 } from "lucide-react";
+import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2, Moon, Sun, User } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -384,13 +384,13 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ minHeight: "100vh", background: "#0F1613", color: "#EDEBE4", padding: 24, fontFamily: "sans-serif" }}>
-          <h2 style={{ color: "#C1613D" }}>Deu um erro na tela</h2>
+        <div style={{ minHeight: "100vh", background: "#FFF7F8", color: "#1F2937", padding: 24, fontFamily: "sans-serif" }}>
+          <h2 style={{ color: "#E5484D" }}>Deu um erro na tela</h2>
           <p>Isso costuma acontecer depois de uma atualização, quando dados salvos no navegador ficam num formato antigo.</p>
           <p style={{ fontSize: 12, opacity: 0.7, marginTop: 16 }}>{String(this.state.error?.message || this.state.error)}</p>
           <button
             onClick={() => { localStorage.clear(); window.location.reload(); }}
-            style={{ marginTop: 16, background: "#C9A24B", color: "#0F1613", border: "none", borderRadius: 999, padding: "10px 18px", fontWeight: 600, cursor: "pointer" }}
+            style={{ marginTop: 16, background: "#C23B6B", color: "#FFFFFF", border: "none", borderRadius: 999, padding: "10px 18px", fontWeight: 600, cursor: "pointer" }}
           >
             Limpar preferências salvas e recarregar
           </button>
@@ -410,7 +410,7 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  if (session === undefined) return <div style={{ minHeight: "100vh", background: "#0F1613" }} />;
+  if (session === undefined) return <div style={{ minHeight: "100vh", background: "#FFF7F8" }} />;
   if (!session) return <Auth />;
   return (
     <ErrorBoundary>
@@ -430,6 +430,12 @@ function Dashboard({ userId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showConta, setShowConta] = useState(false);
+  const [secao, setSecao] = useState(() => loadLS("secao", "inicio"));
+  const [tema, setTema] = useState(() => loadLS("tema", "light"));
+  const [bankItems, setBankItems] = useState([]);
+  useEffect(() => { saveLS("secao", secao); }, [secao]);
+  useEffect(() => { saveLS("tema", tema); }, [tema]);
   const [error, setError] = useState("");
   const [undoStack, setUndoStack] = useState(() => loadLS(`undoStack_${userId}`, []));
   const formatarTx = (tx) => {
@@ -617,10 +623,12 @@ function Dashboard({ userId }) {
         connectToken: data.connectToken,
         includeSandbox: false,
         onSuccess: async (itemData) => {
+          const novoItem = { id: itemData.item.id, institution: itemData.item.connector?.name || "Banco", user_id: userId };
           const { error: insErr } = await supabase
             .from("bank_items")
-            .insert({ id: itemData.item.id, institution: itemData.item.connector?.name || "Banco", user_id: userId });
+            .insert(novoItem);
           if (insErr) setError(insErr.message);
+          else setBankItems((prev) => [...prev, novoItem]);
           setConnecting(false);
         },
         onError: (err) => {
@@ -649,6 +657,9 @@ function Dashboard({ userId }) {
           cats = inserted;
         }
         setCategories(cats.map(mapCategory));
+
+        const { data: items } = await supabase.from("bank_items").select("*");
+        setBankItems(items || []);
 
         // busca em páginas — o Supabase limita a 1000 linhas por consulta por padrão
         let txs = [];
@@ -712,6 +723,7 @@ function Dashboard({ userId }) {
   );
   const categorizadas = monthTx.filter((t) => t.status === "categorizado");
   const pendingCount = monthTx.filter((t) => t.status !== "categorizado").length;
+  const pendingTotalCount = useMemo(() => transactions.filter((t) => t.status !== "categorizado" && t.status !== "excluida").length, [transactions]);
   const excluidas = useMemo(() => transactions.filter((t) => t.status === "excluida"), [transactions]);
   const duplicateGroups = useMemo(() => findDuplicateGroups(transactions, fechamentosFatura), [transactions, fechamentosFatura]);
 
@@ -1021,10 +1033,10 @@ function Dashboard({ userId }) {
 
   const logout = () => supabase.auth.signOut();
 
-  if (!loaded) return <div style={{ minHeight: "100vh", background: "#0F1613" }}><Root /></div>;
+  if (!loaded) return <div style={{ minHeight: "100vh", background: "#FFF7F8" }}><Root /></div>;
 
   return (
-    <div className="app">
+    <div className="app" data-theme={tema}>
       <Root />
       <header className="header">
         <div>
@@ -1032,22 +1044,14 @@ function Dashboard({ userId }) {
           <h1><Mask value="Minhas finanças" active={seguro} /></h1>
         </div>
         <div className="header-actions">
-          <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
-            <RefreshCw size={16} className={syncing ? "spin" : ""} /> {syncing ? "Sincronizando…" : "Sincronizar"}
-          </button>
-          {syncing && (
-            <button className="icon-btn connect-btn" onClick={cancelSync} aria-label="Cancelar sincronização" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>
-              <X size={16} /> Cancelar
-            </button>
-          )}
-          <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
-            <Landmark size={16} /> {connecting ? "Conectando…" : <Mask value="Conectar banco" active={seguro} />}
-          </button>
           <button className="icon-btn" onClick={desfazer} disabled={undoStack.length === 0} aria-label="Desfazer" title={undoStack.length > 0 ? `Desfazer: ${undoStack[undoStack.length - 1].label}` : "Nada pra desfazer"}>
             <Undo2 size={18} />
           </button>
           <button className="icon-btn" onClick={refazer} disabled={redoStack.length === 0} aria-label="Refazer" title={redoStack.length > 0 ? `Refazer: ${redoStack[redoStack.length - 1].label}` : "Nada pra refazer"}>
             <Redo2 size={18} />
+          </button>
+          <button className="icon-btn" onClick={() => setTema(tema === "light" ? "dark" : "light")} aria-label="Alternar tema" title={tema === "light" ? "Mudar pra escuro" : "Mudar pra claro"}>
+            {tema === "light" ? <Moon size={17} /> : <Sun size={17} />}
           </button>
           <div className="privacy-controls">
             <button
@@ -1059,23 +1063,54 @@ function Dashboard({ userId }) {
               <Shield size={16} /> {privacyMode === "normal" ? "Normal" : privacyMode === "privado" ? "Privado" : "Seguro"}
             </button>
           </div>
-          <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações"><Settings size={18} /></button>
-          <button className="icon-btn" onClick={logout} aria-label="Sair"><LogOut size={18} /></button>
-          <div className="month-nav">
-            <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} aria-label="Mês anterior"><ChevronLeft size={18} /></button>
-            <span>{monthLabel(cursor)}</span>
-            <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} aria-label="Próximo mês"><ChevronRight size={18} /></button>
-          </div>
+          <button className="icon-btn" onClick={() => setShowConta(true)} aria-label="Minha conta" title="Minha conta"><User size={18} /></button>
+          <button className="icon-btn" onClick={logout} aria-label="Sair" title="Sair"><LogOut size={18} /></button>
         </div>
       </header>
 
-      <div className="view-tabs">
-        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}><Mask value="Cartão de Crédito" active={seguro} /></button>
-        <button className={"tab-btn" + (view === "resumo" ? " active" : "")} onClick={() => setView("resumo")}><Mask value="Resumo por categoria" active={seguro} /></button>
-        <button className={"tab-btn" + (view === "lixeira" ? " active" : "")} onClick={() => setView("lixeira")}>Lixeira{excluidas.length > 0 ? ` (${excluidas.length})` : ""}</button>
-      </div>
+      <nav className="secao-nav">
+        {[
+          { id: "inicio", label: "Início" },
+          { id: "planejamento", label: "Planejamento" },
+          { id: "credito", label: "Crédito" },
+          { id: "debito", label: "Débito" },
+          { id: "movimentacoes", label: "Movimentações" },
+          { id: "investimentos", label: "Investimentos" },
+        ].map((s) => (
+          <button key={s.id} className={"secao-btn" + (secao === s.id ? " active" : "")} onClick={() => setSecao(s.id)}>
+            {s.label}
+          </button>
+        ))}
+      </nav>
 
       {error && <div className="banner banner-error"><AlertTriangle size={16} /> {error}</div>}
+
+      {secao === "credito" && (
+      <>
+      <div className="ledger-head" style={{ marginBottom: 8 }}>
+        <button className="icon-btn connect-btn" onClick={syncBank} disabled={syncing} aria-label="Sincronizar">
+          <RefreshCw size={16} className={syncing ? "spin" : ""} /> {syncing ? "Sincronizando…" : "Sincronizar"}
+        </button>
+        {syncing && (
+          <button className="icon-btn connect-btn" onClick={cancelSync} aria-label="Cancelar sincronização" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+            <X size={16} /> Cancelar
+          </button>
+        )}
+        <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
+          <Landmark size={16} /> {connecting ? "Conectando…" : <Mask value="Conectar banco" active={seguro} />}
+        </button>
+        <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações de fatura" title="Fechamentos e limpeza"><Settings size={18} /></button>
+        <div className="month-nav">
+          <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} aria-label="Mês anterior"><ChevronLeft size={18} /></button>
+          <span>{monthLabel(cursor)}</span>
+          <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} aria-label="Próximo mês"><ChevronRight size={18} /></button>
+        </div>
+      </div>
+
+      <div className="view-tabs">
+        <button className={"tab-btn" + (view === "transacoes" ? " active" : "")} onClick={() => setView("transacoes")}><Mask value="Cartão de Crédito" active={seguro} /></button>
+        <button className={"tab-btn" + (view === "lixeira" ? " active" : "")} onClick={() => setView("lixeira")}>Lixeira{excluidas.length > 0 ? ` (${excluidas.length})` : ""}</button>
+      </div>
 
       {view === "transacoes" && duplicateGroups.length > 0 && (
         <section className="duplicates-panel">
@@ -1231,9 +1266,16 @@ function Dashboard({ userId }) {
           })()}
         </section>
       )}
+      </>
+      )}
 
-      {view === "resumo" && (
+      {secao === "planejamento" && (
         <section className="groups">
+          <div className="month-nav" style={{ marginBottom: 14 }}>
+            <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} aria-label="Mês anterior"><ChevronLeft size={18} /></button>
+            <span>{monthLabel(cursor)}</span>
+            <button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} aria-label="Próximo mês"><ChevronRight size={18} /></button>
+          </div>
           {Object.entries(GROUPS).map(([key, meta]) => (
             <div key={key} className="group-card" style={{ "--group-color": meta.color }}>
               <div className="group-head">
@@ -1263,6 +1305,113 @@ function Dashboard({ userId }) {
             </div>
           ))}
         </section>
+      )}
+
+      {secao === "inicio" && (() => {
+        const creditoMes = monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito");
+        const resumoCredito = calcularResumoFatura(creditoMes);
+        const plannedTotal = totals.essenciais.planned + totals.extras.planned;
+        const spentTotal = totals.essenciais.spent + totals.extras.spent;
+        const pctExecutado = plannedTotal > 0 ? Math.min(999, (spentTotal / plannedTotal) * 100) : 0;
+
+        // últimos 6 meses de gasto total no crédito, pra evolução histórica
+        const meses = [];
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date(cursor.getFullYear(), cursor.getMonth() - i, 1);
+          meses.push({ key: monthKey(d), label: d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "") });
+        }
+        const gastoPorMes = meses.map((m) => {
+          const soma = transactions
+            .filter((t) => t.status === "categorizado" && t.tipo === "Crédito" && competencia(t, fechamentosFatura) === m.key)
+            .reduce((s, t) => s + Number(t.valor), 0);
+          return { ...m, valor: soma };
+        });
+        const maxGasto = Math.max(1, ...gastoPorMes.map((m) => m.valor));
+
+        return (
+          <>
+            {pendingTotalCount > 0 && (
+              <div className="banner banner-pending" style={{ cursor: "pointer" }} onClick={() => { setSecao("credito"); setView("transacoes"); }}>
+                <Inbox size={16} /> Você tem {pendingTotalCount} transação(ões) pendente(s) de aprovação
+              </div>
+            )}
+
+            <FaturaTotalCard transactions={creditoMes} hidden={hidden} seguro={seguro} />
+
+            <section className="bank-group">
+              <div className="group-head"><h2>Débito · {monthLabel(cursor)}</h2></div>
+              <p className="empty" style={{ margin: 0 }}>Em breve — ainda vamos montar essa parte.</p>
+            </section>
+
+            <section className="bank-group">
+              <div className="group-head">
+                <h2>Resumo por categoria · {monthLabel(cursor)}</h2>
+                <span className="group-total">{pctExecutado.toFixed(0)}% executado <span className="of">/ <Mask value={currency(plannedTotal)} active={hidden} mono /></span></span>
+              </div>
+              <div className="cat-bar" style={{ marginBottom: 14 }}>
+                <div className="cat-bar-fill" style={{ width: `${Math.min(100, pctExecutado)}%`, background: pctExecutado > 100 ? "var(--danger)" : "var(--gold)" }} />
+              </div>
+              {Object.entries(GROUPS).map(([key, meta]) => (
+                <div key={key} style={{ marginBottom: 10 }}>
+                  <div className="cat-row-top">
+                    <span className="cat-name" style={{ color: meta.color, fontWeight: 600 }}>{meta.label}</span>
+                    <span className="cat-values"><Mask value={currency(totals[key].spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(totals[key].planned)} active={hidden} mono /></span></span>
+                  </div>
+                </div>
+              ))}
+              <button className="add-btn" style={{ marginTop: 4 }} onClick={() => setSecao("planejamento")}>Ver por categoria →</button>
+            </section>
+
+            <section className="bank-group">
+              <div className="group-head"><h2>Evolução — últimos 6 meses</h2></div>
+              <div className="evolucao-chart">
+                {gastoPorMes.map((m) => (
+                  <div key={m.key} className="evolucao-bar-wrap">
+                    <div className="evolucao-bar" style={{ height: `${Math.max(4, (m.valor / maxGasto) * 100)}%` }} title={currency(m.valor)} />
+                    <span className="evolucao-label">{m.label}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="bank-group">
+              <div className="group-head"><h2>Patrimônio líquido</h2></div>
+              <p className="empty" style={{ margin: 0 }}>Em breve — você ainda vai me dizer de onde puxar esse dado.</p>
+            </section>
+          </>
+        );
+      })()}
+
+      {secao === "debito" && (
+        <section className="bank-group"><div className="group-head"><h2>Débito</h2></div><p className="empty" style={{ margin: 0 }}>Em breve — essa seção ainda vai ser construída.</p></section>
+      )}
+      {secao === "movimentacoes" && (
+        <section className="bank-group"><div className="group-head"><h2>Movimentações</h2></div><p className="empty" style={{ margin: 0 }}>Em breve — essa seção ainda vai ser construída.</p></section>
+      )}
+      {secao === "investimentos" && (
+        <section className="bank-group"><div className="group-head"><h2>Investimentos</h2></div><p className="empty" style={{ margin: 0 }}>Em breve — essa seção ainda vai ser construída.</p></section>
+      )}
+
+      {showConta && (
+        <div className="modal-backdrop" onClick={() => setShowConta(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head"><h3>Minha conta</h3><button onClick={() => setShowConta(false)}><X size={18} /></button></div>
+            <ContaForm />
+            <p className="modal-hint" style={{ marginTop: 14 }}>Bancos conectados</p>
+            {bankItems.length === 0 ? (
+              <p className="empty" style={{ margin: 0 }}>Nenhum banco conectado ainda.</p>
+            ) : (
+              <div className="banco-conectado-list">
+                {bankItems.map((b) => (
+                  <div key={b.id} className="banco-conectado-item"><Landmark size={15} /> {b.institution}</div>
+                ))}
+              </div>
+            )}
+            <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} style={{ marginTop: 10 }}>
+              <Landmark size={16} /> {connecting ? "Conectando…" : "Conectar mais um banco"}
+            </button>
+          </div>
+        </div>
       )}
 
       {showAdd && <AddRawModal tipos={TIPOS} bancos={BANCOS} categories={categories} fechamentosFatura={fechamentosFatura} onClose={() => setShowAdd(false)} onSave={addRawTransaction} />}
@@ -2537,6 +2686,61 @@ function AddRawModal({ tipos, bancos, categories, fechamentosFatura, onClose, on
   );
 }
 
+function ContaForm() {
+  const [email, setEmail] = useState("");
+  const [novaSenha, setNovaSenha] = useState("");
+  const [confirmaSenha, setConfirmaSenha] = useState("");
+  const [msg, setMsg] = useState("");
+  const [erro, setErro] = useState("");
+  const [salvandoEmail, setSalvandoEmail] = useState(false);
+  const [salvandoSenha, setSalvandoSenha] = useState(false);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setEmail(data?.user?.email || ""));
+  }, []);
+
+  const salvarEmail = async () => {
+    setErro(""); setMsg(""); setSalvandoEmail(true);
+    const { error } = await supabase.auth.updateUser({ email });
+    setSalvandoEmail(false);
+    if (error) setErro(error.message);
+    else setMsg("Enviamos um link de confirmação pro novo e-mail.");
+  };
+
+  const salvarSenha = async () => {
+    setErro(""); setMsg("");
+    if (novaSenha.length < 6) { setErro("A senha precisa ter pelo menos 6 caracteres."); return; }
+    if (novaSenha !== confirmaSenha) { setErro("As senhas não coincidem."); return; }
+    setSalvandoSenha(true);
+    const { error } = await supabase.auth.updateUser({ password: novaSenha });
+    setSalvandoSenha(false);
+    if (error) setErro(error.message);
+    else { setMsg("Senha atualizada."); setNovaSenha(""); setConfirmaSenha(""); }
+  };
+
+  return (
+    <div>
+      {msg && <p style={{ color: "var(--ok)", fontSize: 12 }}>{msg}</p>}
+      {erro && <p style={{ color: "var(--danger)", fontSize: 12 }}>{erro}</p>}
+      <label>E-mail
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="tx-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <button className="submit-btn" style={{ padding: "6px 14px" }} onClick={salvarEmail} disabled={salvandoEmail}>Salvar</button>
+        </div>
+      </label>
+      <label style={{ marginTop: 10, display: "block" }}>Nova senha
+        <input className="tx-input" type="password" placeholder="Deixe em branco pra não trocar" value={novaSenha} onChange={(e) => setNovaSenha(e.target.value)} />
+      </label>
+      <label style={{ marginTop: 6, display: "block" }}>Confirmar nova senha
+        <div style={{ display: "flex", gap: 8 }}>
+          <input className="tx-input" type="password" value={confirmaSenha} onChange={(e) => setConfirmaSenha(e.target.value)} />
+          <button className="submit-btn" style={{ padding: "6px 14px" }} onClick={salvarSenha} disabled={salvandoSenha || !novaSenha}>Salvar</button>
+        </div>
+      </label>
+    </div>
+  );
+}
+
 function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento, merchants, patterns, categories, onDeletePattern, onClose }) {
   const [banco, setBanco] = useState("Nubank");
   const [competencia, setCompetencia] = useState(monthKey(new Date()));
@@ -2614,11 +2818,19 @@ function Root() {
   return (
     <style>{`
       :root {
-        --bg: #0F1613; --surface: #172019; --surface-2: #1D2721;
-        --text: #EDEBE4; --muted: #8B9389; --ok: #5FA377; --warn: #C1613D; --gold: #C9A24B; --line: #2A342D;
+        --bg: #FFF7F8; --surface: #FFFFFF; --surface-2: #FCE8EE;
+        --text: #1F2937; --muted: #6B7280; --ok: #22C55E; --warn: #FFA07A; --danger: #E5484D;
+        --gold: #C23B6B; --secondary: #F78DA7; --info: #8B5CF6; --line: #E6E6EA;
+        --shadow: 0 1px 3px rgba(31,41,55,0.08), 0 1px 2px rgba(31,41,55,0.05);
+      }
+      .app[data-theme="dark"] {
+        --bg: #111318; --surface: #191C23; --surface-2: #222630;
+        --text: #F8F7F8; --muted: #A8A8B0; --ok: #4ADE80; --warn: #FFA07A; --danger: #E5484D;
+        --gold: #E05283; --secondary: #F78DA7; --info: #A78BFA; --line: #30333B;
+        --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.24);
       }
       body { margin: 0; background: var(--bg); }
-      .app { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', Inter, sans-serif; padding: 28px 20px 60px; max-width: 720px; margin: 0 auto; min-height: 100vh; overflow-x: hidden; box-sizing: border-box; }
+      .app { background: var(--bg); color: var(--text); font-family: 'IBM Plex Sans', Inter, sans-serif; padding: 28px 20px 60px; max-width: 720px; margin: 0 auto; min-height: 100vh; overflow-x: hidden; box-sizing: border-box; transition: background 0.15s ease, color 0.15s ease; }
       .header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
       .eyebrow { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
       h1 { font-family: 'Fraunces', Georgia, serif; font-size: 28px; margin: 0; font-weight: 600; }
@@ -2630,7 +2842,7 @@ function Root() {
       .mask-text.mono { font-family: 'IBM Plex Mono', monospace; }
       .mask-peek { background: none; border: none; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; user-select: none; -webkit-user-select: none; touch-action: none; }
       .mask-peek:hover { color: var(--text); }
-      .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; }
+      .icon-btn { background: var(--surface); border: 1px solid var(--line); color: var(--text); border-radius: 999px; padding: 8px; display: flex; cursor: pointer; box-shadow: var(--shadow); }
       .icon-btn:disabled { opacity: 0.35; cursor: default; }
       .connect-btn { width: auto; gap: 6px; padding: 8px 14px; font-size: 12px; font-weight: 600; color: var(--gold); border-color: var(--gold); }
       .connect-btn:disabled { opacity: 0.6; cursor: default; }
@@ -2640,9 +2852,19 @@ function Root() {
       .month-nav { display: flex; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 14px; }
       .month-nav button { background: none; border: none; color: var(--text); cursor: pointer; display: flex; padding: 2px; }
       .banner { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 12px; }
-      .banner-error { background: rgba(193,97,61,0.15); border: 1px solid var(--warn); color: var(--warn); }
+      .banner-error { background: rgba(229,72,77,0.12); border: 1px solid var(--danger); color: var(--danger); }
       .selecao-bar { position: sticky; top: 8px; z-index: 20; display: flex; align-items: center; gap: 10px; background: var(--surface-2); border: 1px solid var(--gold); border-radius: 10px; padding: 8px 14px; margin-bottom: 12px; font-size: 12px; color: var(--text); }
-      .banner-pending { background: rgba(201,162,75,0.14); border: 1px solid var(--gold); color: var(--gold); }
+      .banner-pending { background: var(--surface-2); border: 1px solid var(--gold); color: var(--gold); font-weight: 600; }
+      .secao-nav { display: flex; gap: 6px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+      .secao-btn { flex-shrink: 0; background: none; border: none; color: var(--muted); font-size: 13px; font-weight: 600; padding: 9px 14px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
+      .secao-btn.active { background: var(--gold); color: #FFFFFF; }
+      .secao-btn:not(.active):hover { background: var(--surface-2); color: var(--text); }
+      .evolucao-chart { display: flex; align-items: flex-end; gap: 10px; height: 120px; padding-top: 10px; }
+      .evolucao-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
+      .evolucao-bar { width: 100%; max-width: 32px; background: var(--gold); border-radius: 6px 6px 2px 2px; min-height: 4px; transition: height 0.2s ease; }
+      .evolucao-label { font-size: 10px; color: var(--muted); text-transform: capitalize; }
+      .banco-conectado-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+      .banco-conectado-item { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--text); }
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
       .section-title { display: flex; align-items: center; gap: 8px; font-family: 'Fraunces', Georgia, serif; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
@@ -2656,7 +2878,7 @@ function Root() {
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
       .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
       .confirm-btn:disabled { opacity: 0.5; cursor: default; }
-      .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; }
+      .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; box-shadow: var(--shadow); }
       .bank-group-total { border-color: var(--gold); background: rgba(201,162,75,0.06); }
       .fatura-summary { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
       .search-summary { font-size: 12px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; margin-bottom: 14px; }
@@ -2773,7 +2995,7 @@ function Root() {
       .import-error-row { font-size: 11px; color: var(--warn); padding: 2px 0; }
       .modal label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
       .modal input, .modal select { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; color: var(--text); font-size: 14px; font-family: inherit; }
-      .submit-btn { background: var(--gold); color: #0F1613; border: none; border-radius: 999px; padding: 10px; font-weight: 600; cursor: pointer; margin-top: 4px; }
+      .submit-btn { background: var(--gold); color: #FFFFFF; border: none; border-radius: 999px; padding: 10px; font-weight: 600; cursor: pointer; margin-top: 4px; box-shadow: var(--shadow); }
       .rules-list { display: grid; gap: 6px; max-height: 160px; overflow-y: auto; }
       .rule-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
     `}</style>
