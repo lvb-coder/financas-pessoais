@@ -1023,26 +1023,30 @@ function Dashboard({ userId }) {
         if (!jaExiste) faltantes.push(n);
       }
       if (faltantes.length > 0) {
-        const rows = faltantes.map((n) => ({
-          data: dataFinal,
-          estabelecimento: `${name} ${n}/${parcelaTotal}`,
-          valor,
-          tipo: tx.tipo,
-          banco: bancoFinal,
-          user_id: userId,
-          status: "categorizado",
-          category_id: categoryId,
-          merchant_id: merchant.id,
-          projetada: true,
-          parcela_atual: n,
-          parcela_total: parcelaTotal,
-          origem_id: origemId,
-          pix_credito: !!pixCredito,
-          competencia_override: addFatura(faturaBase, n - parcelaAtual),
-        }));
-        const { data: inseridas, error: projErr } = await supabase.from("transactions").insert(rows).select();
-        if (projErr) { setError(projErr.message); return; }
-        setTransactions((prev) => [...prev, ...(inseridas || []).map(mapTransaction)]);
+        const inseridas = [];
+        for (const n of faltantes) {
+          const row = {
+            data: dataFinal,
+            estabelecimento: `${name} ${n}/${parcelaTotal}`,
+            valor,
+            tipo: tx.tipo,
+            banco: bancoFinal,
+            user_id: userId,
+            status: "categorizado",
+            category_id: categoryId,
+            merchant_id: merchant.id,
+            projetada: true,
+            parcela_atual: n,
+            parcela_total: parcelaTotal,
+            origem_id: origemId,
+            pix_credito: !!pixCredito,
+            competencia_override: addFatura(faturaBase, n - parcelaAtual),
+          };
+          const { data: inserida, error: projErr } = await supabase.from("transactions").insert(row).select().single();
+          if (projErr) { setError(`Parcela ${n}/${parcelaTotal}: ${projErr.message}`); continue; }
+          inseridas.push(inserida);
+        }
+        setTransactions((prev) => [...prev, ...inseridas.map(mapTransaction)]);
       }
     }
 
