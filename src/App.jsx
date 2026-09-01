@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Component } from "react";
+import { useState, useEffect, useMemo, useRef, Component } from "react";
 import { Plus, Settings, X, AlertTriangle, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Inbox, Check, LogOut, Landmark, RefreshCw, RotateCcw, Pencil, Eye, EyeOff, Shield, Undo2, Redo2, Moon, Sun, User, Menu } from "lucide-react";
 import { PluggyConnect } from "pluggy-connect-sdk";
 import { supabase } from "./supabaseClient";
@@ -332,6 +332,7 @@ function GrupoLinha({ meta, spent, planned, categoriasDoGrupo, spentByCategory, 
 
 function GraficoLinha({ dados, maxValor }) {
   const [hoverIdx, setHoverIdx] = useState(null);
+  const svgRef = useRef(null);
   if (dados.length === 0) return null;
   const W = 100, H = 100, PAD = 4;
   const pontos = dados.map((d, i) => {
@@ -341,28 +342,48 @@ function GraficoLinha({ dados, maxValor }) {
   });
   const linha = pontos.map((p) => `${p.x},${p.y}`).join(" ");
   const area = `0,${H} ${linha} ${W},${H}`;
+
+  const moverMouse = (e) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const xPct = ((e.clientX - rect.left) / rect.width) * W;
+    let melhorIdx = 0, menorDist = Infinity;
+    pontos.forEach((p, i) => {
+      const dist = Math.abs(p.x - xPct);
+      if (dist < menorDist) { menorDist = dist; melhorIdx = i; }
+    });
+    setHoverIdx(melhorIdx);
+  };
+
+  const pHover = hoverIdx !== null ? pontos[hoverIdx] : null;
+
   return (
     <div className="grafico-linha-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="grafico-linha-svg">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="grafico-linha-svg"
+        onMouseMove={moverMouse}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
         <polygon points={area} fill="var(--gold)" opacity="0.12" />
         <polyline points={linha} fill="none" stroke="var(--gold)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-        {pontos.map((p, i) => (
-          <circle
-            key={i}
-            cx={p.x} cy={p.y} r={hoverIdx === i ? 2 : 1}
-            fill="var(--gold)"
-            onMouseEnter={() => setHoverIdx(i)}
-            onMouseLeave={() => setHoverIdx(null)}
-          />
-        ))}
+        {pHover && (
+          <>
+            <line x1={pHover.x} y1="0" x2={pHover.x} y2={H} stroke="var(--muted)" strokeWidth="0.4" strokeDasharray="2,2" vectorEffect="non-scaling-stroke" />
+            <circle cx={pHover.x} cy={pHover.y} r="2.2" fill="var(--gold)" stroke="var(--surface)" strokeWidth="0.8" />
+          </>
+        )}
       </svg>
       <div className="grafico-linha-labels">
         {dados.map((d, i) => (
           (d.dia % 5 === 0 || d.dia === 1) && <span key={i} className="evolucao-label">{d.dia}</span>
         ))}
       </div>
-      {hoverIdx !== null && (
-        <div className="grafico-linha-tooltip">Dia {dados[hoverIdx].dia}: {currency(dados[hoverIdx].valor)}</div>
+      {pHover && (
+        <div className="grafico-linha-tooltip" style={{ left: `${pHover.x}%` }}>
+          <strong>Dia {pHover.dia}</strong><br />{currency(pHover.valor)}</div>
       )}
     </div>
   );
@@ -1440,23 +1461,40 @@ function Dashboard({ userId }) {
         const creditoMes = monthTx.filter((t) => (t.banco === "Nubank" || t.banco === "Bradesco") && t.tipo === "Crédito");
         const resumoCredito = calcularResumoFatura(creditoMes);
         const plannedTotal = totals.essenciais.planned + totals.extras.planned;
-        const spentTotal = totals.essenciais.spent + totals.extras.spent;
-        const disponivel = plannedTotal - spentTotal;
-        const pctExecutado = plannedTotal > 0 ? Math.min(999, (spentTotal / plannedTotal) * 100) : 0;
+        const creditoGasto = resumoCredito.totalFatura;
+        const debitoGasto = 0; // ainda não temos dado de débito
+        const totalGeralGasto = creditoGasto + debitoGasto;
+        const limiteDisponivel = plannedTotal - creditoGasto;
+        const pctExecutadoCredito = plannedTotal > 0 ? Math.min(999, (creditoGasto / plannedTotal) * 100) : 0;
 
         // uma linha por COMPRA (não por parcela) — pega o valor total (valor × parcelaTotal,
         // que é o mesmo em qualquer parcela da série) de cada compra que ainda tem parcela
-        // programada em aberto, contando só uma vez por compra
+        // programada em aberto, contando só uma vez por compra. Também separa quanto já foi
+        // pago (parcelas cuja fatura já passou ou é a atual) de quanto ainda falta.
         const seriesAbertas = new Map();
         transactions.forEach((t) => {
           if (t.status !== "categorizado" || t.parcelaTotal <= 1 || t.parcelaAtual <= 1) return;
           const chave = t.origemId || t.id;
-          if (!seriesAbertas.has(chave)) seriesAbertas.set(chave, { banco: t.banco, valorTotal: Number(t.valor) * t.parcelaTotal });
+          if (!seriesAbertas.has(chave)) seriesAbertas.set(chave, { banco: t.banco, valor: Number(t.valor), parcelaTotal: t.parcelaTotal });
         });
-        const totalParceladoGeral = [...seriesAbertas.values()].reduce((s, v) => s + v.valorTotal, 0);
-        const qtdParceladoGeral = seriesAbertas.size;
+        let totalParceladoGeral = 0, totalPagoGeral = 0, totalFaltaGeral = 0;
         const totalParceladoPorBanco = {};
-        seriesAbertas.forEach((v) => { totalParceladoPorBanco[v.banco] = (totalParceladoPorBanco[v.banco] || 0) + v.valorTotal; });
+        const totalPagoPorBanco = {};
+        const totalFaltaPorBanco = {};
+        seriesAbertas.forEach((info, chave) => {
+          const valorTotalCompra = info.valor * info.parcelaTotal;
+          const parcelasDaSerie = transactions.filter((t) => t.status === "categorizado" && (t.origemId || t.id) === chave);
+          const pago = parcelasDaSerie.filter((t) => competencia(t, fechamentosFatura) <= currentMonth).reduce((s, t) => s + Number(t.valor), 0);
+          const falta = valorTotalCompra - pago;
+          totalParceladoGeral += valorTotalCompra;
+          totalPagoGeral += pago;
+          totalFaltaGeral += falta;
+          totalParceladoPorBanco[info.banco] = (totalParceladoPorBanco[info.banco] || 0) + valorTotalCompra;
+          totalPagoPorBanco[info.banco] = (totalPagoPorBanco[info.banco] || 0) + pago;
+          totalFaltaPorBanco[info.banco] = (totalFaltaPorBanco[info.banco] || 0) + falta;
+        });
+        const qtdParceladoGeral = seriesAbertas.size;
+        const pctPagoGeral = totalParceladoGeral > 0 ? (totalPagoGeral / totalParceladoGeral) * 100 : 0;
 
         // gasto por dia dentro do mês selecionado, pra evolução
         const diasNoMes = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
@@ -1484,20 +1522,44 @@ function Dashboard({ userId }) {
             {/* STATUS GERAL */}
             <section className="bank-group">
               <div className="group-head"><h2>Status geral</h2></div>
-              <div className="status-geral-grid">
-                <div className="status-geral-item">
-                  <span className="status-geral-label">Total gasto</span>
-                  <span className="status-geral-valor"><Mask value={currency(spentTotal)} active={hidden} mono /></span>
-                </div>
-                <div className="status-geral-item">
-                  <span className="status-geral-label">Disponível</span>
-                  <span className="status-geral-valor" style={{ color: disponivel < 0 ? "var(--danger)" : "var(--ok)" }}><Mask value={currency(disponivel)} active={hidden} mono /></span>
-                </div>
+
+              <div className="status-geral-item" style={{ marginBottom: 16 }}>
+                <span className="status-geral-label">Total geral</span>
+                <span className="status-geral-valor"><Mask value={currency(totalGeralGasto)} active={hidden} mono /></span>
               </div>
-              <div className="cat-bar" style={{ marginTop: 12 }}>
-                <div className="cat-bar-fill" style={{ width: `${Math.min(100, pctExecutado)}%`, background: pctExecutado > 100 ? "var(--danger)" : "var(--gold)" }} />
+
+              <div className="status-bloco">
+                <p className="modal-hint" style={{ margin: "0 0 6px", fontWeight: 700 }}>Crédito</p>
+                <div className="status-geral-grid">
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Total gasto</span>
+                    <span className="status-geral-valor" style={{ fontSize: 18 }}><Mask value={currency(creditoGasto)} active={hidden} mono /></span>
+                  </div>
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Limite disponível</span>
+                    <span className="status-geral-valor" style={{ fontSize: 18, color: limiteDisponivel < 0 ? "var(--danger)" : "var(--ok)" }}><Mask value={currency(limiteDisponivel)} active={hidden} mono /></span>
+                  </div>
+                </div>
+                <div className="cat-bar" style={{ marginTop: 10 }}>
+                  <div className="cat-bar-fill" style={{ width: `${Math.min(100, pctExecutadoCredito)}%`, background: pctExecutadoCredito > 100 ? "var(--danger)" : "var(--gold)" }} />
+                </div>
+                <p className="modal-hint" style={{ marginTop: 6 }}>{pctExecutadoCredito.toFixed(0)}% do planejado (<Mask value={currency(plannedTotal)} active={hidden} mono />)</p>
               </div>
-              <p className="modal-hint" style={{ marginTop: 6 }}>{pctExecutado.toFixed(0)}% do planejado do mês (<Mask value={currency(plannedTotal)} active={hidden} mono />)</p>
+
+              <div className="status-bloco" style={{ marginTop: 16 }}>
+                <p className="modal-hint" style={{ margin: "0 0 6px", fontWeight: 700 }}>Débito</p>
+                <div className="status-geral-grid">
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Total gasto</span>
+                    <span className="status-geral-valor" style={{ fontSize: 18 }}><Mask value={currency(debitoGasto)} active={hidden} mono /></span>
+                  </div>
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Saldo disponível</span>
+                    <span className="status-geral-valor" style={{ fontSize: 18 }}>—</span>
+                  </div>
+                </div>
+                <p className="empty" style={{ margin: "8px 0 0" }}>Em breve — ainda vamos montar essa parte.</p>
+              </div>
             </section>
 
             {/* GASTOS DO MÊS */}
@@ -1520,14 +1582,35 @@ function Dashboard({ userId }) {
             {qtdParceladoGeral > 0 && (
               <section className="bank-group">
                 <div className="group-head">
-                  <h2>Compras parceladas</h2>
+                  <h2>Gastos parcelados</h2>
                   <span className="group-total"><Mask value={currency(totalParceladoGeral)} active={hidden} mono /></span>
                 </div>
                 <p className="modal-hint" style={{ margin: "0 0 10px" }}>{qtdParceladoGeral} compra(s) em aberto, valor total de cada uma</p>
+
+                <div className="status-geral-grid" style={{ marginBottom: 10 }}>
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Já pago</span>
+                    <span className="status-geral-valor" style={{ fontSize: 16, color: "var(--ok)" }}><Mask value={currency(totalPagoGeral)} active={hidden} mono /></span>
+                  </div>
+                  <div className="status-geral-item">
+                    <span className="status-geral-label">Falta pagar</span>
+                    <span className="status-geral-valor" style={{ fontSize: 16 }}><Mask value={currency(totalFaltaGeral)} active={hidden} mono /></span>
+                  </div>
+                </div>
+                <div className="cat-bar" style={{ marginBottom: 6 }}>
+                  <div className="cat-bar-fill" style={{ width: `${Math.min(100, pctPagoGeral)}%`, background: "var(--ok)" }} />
+                </div>
+                <p className="modal-hint" style={{ margin: "0 0 14px" }}>{pctPagoGeral.toFixed(0)}% já pago · {(100 - pctPagoGeral).toFixed(0)}% falta</p>
+
                 {Object.entries(totalParceladoPorBanco).map(([banco, valor]) => (
-                  <div key={banco} className="cat-row-top" style={{ marginBottom: 4 }}>
-                    <span className="cat-name"><Mask value={displayBanco(banco)} active={seguro} /></span>
-                    <span className="cat-values"><Mask value={currency(valor)} active={hidden} mono /></span>
+                  <div key={banco} style={{ marginBottom: 10 }}>
+                    <div className="cat-row-top">
+                      <span className="cat-name"><Mask value={displayBanco(banco)} active={seguro} /></span>
+                      <span className="cat-values"><Mask value={currency(valor)} active={hidden} mono /></span>
+                    </div>
+                    <p className="modal-hint" style={{ margin: "2px 0 0" }}>
+                      Pago <Mask value={currency(totalPagoPorBanco[banco] || 0)} active={hidden} mono /> · Falta <Mask value={currency(totalFaltaPorBanco[banco] || 0)} active={hidden} mono />
+                    </p>
                   </div>
                 ))}
               </section>
@@ -3050,10 +3133,11 @@ function Root() {
       .grafico-linha-svg circle { cursor: pointer; }
       .grafico-linha-labels { display: flex; justify-content: space-between; margin-top: 4px; }
       .evolucao-label { font-size: 10px; color: var(--muted); }
-      .grafico-linha-tooltip { position: absolute; top: -6px; right: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text); box-shadow: var(--shadow); }
+      .grafico-linha-tooltip { position: absolute; top: 0; transform: translateX(-50%); background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; font-size: 11px; color: var(--text); box-shadow: var(--shadow); pointer-events: none; white-space: nowrap; line-height: 1.4; }
       .banco-conectado-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
       .banco-conectado-item { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--text); }
       .status-geral-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+      .status-bloco { padding: 14px; background: var(--surface-2); border-radius: 12px; }
       .status-geral-item { display: flex; flex-direction: column; gap: 4px; }
       .status-geral-label { font-size: 12px; color: var(--muted); }
       .status-geral-valor { font-family: 'IBM Plex Mono', monospace; font-size: 22px; font-weight: 600; }
