@@ -303,7 +303,8 @@ function CartaoResumoLinha({ banco, txs, hidden, seguro }) {
 
 function GrupoLinha({ meta, spent, planned, categoriasDoGrupo, spentByCategory, categorizadas, merchants, hidden, seguro }) {
   const [aberto, setAberto] = useState(false);
-  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+  const pctReal = planned > 0 ? (spent / planned) * 100 : 0;
+  const pct = Math.min(100, pctReal);
   const over = planned > 0 && spent > planned;
   return (
     <div className="grupo-linha">
@@ -311,7 +312,7 @@ function GrupoLinha({ meta, spent, planned, categoriasDoGrupo, spentByCategory, 
         {aberto ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         <span className="dot" style={{ background: meta.color }} />
         <span className="grupo-linha-nome">{meta.label}</span>
-        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span></span>
+        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span> <span className="cat-pct">({pctReal.toFixed(0)}%)</span></span>
       </button>
       <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--danger)" : meta.color }} /></div>
       {aberto && (
@@ -329,16 +330,55 @@ function GrupoLinha({ meta, spent, planned, categoriasDoGrupo, spentByCategory, 
   );
 }
 
+function GraficoLinha({ dados, maxValor }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  if (dados.length === 0) return null;
+  const W = 100, H = 100, PAD = 4;
+  const pontos = dados.map((d, i) => {
+    const x = dados.length > 1 ? (i / (dados.length - 1)) * W : W / 2;
+    const y = H - PAD - ((d.valor / maxValor) * (H - PAD * 2));
+    return { x, y, ...d };
+  });
+  const linha = pontos.map((p) => `${p.x},${p.y}`).join(" ");
+  const area = `0,${H} ${linha} ${W},${H}`;
+  return (
+    <div className="grafico-linha-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="grafico-linha-svg">
+        <polygon points={area} fill="var(--gold)" opacity="0.12" />
+        <polyline points={linha} fill="none" stroke="var(--gold)" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+        {pontos.map((p, i) => (
+          <circle
+            key={i}
+            cx={p.x} cy={p.y} r={hoverIdx === i ? 2 : 1}
+            fill="var(--gold)"
+            onMouseEnter={() => setHoverIdx(i)}
+            onMouseLeave={() => setHoverIdx(null)}
+          />
+        ))}
+      </svg>
+      <div className="grafico-linha-labels">
+        {dados.map((d, i) => (
+          (d.dia % 5 === 0 || d.dia === 1) && <span key={i} className="evolucao-label">{d.dia}</span>
+        ))}
+      </div>
+      {hoverIdx !== null && (
+        <div className="grafico-linha-tooltip">Dia {dados[hoverIdx].dia}: {currency(dados[hoverIdx].valor)}</div>
+      )}
+    </div>
+  );
+}
+
 function CategoriaLinha({ categoria, spent, planned, txs, merchants, hidden, seguro }) {
   const [aberto, setAberto] = useState(false);
-  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+  const pctReal = planned > 0 ? (spent / planned) * 100 : 0;
+  const pct = Math.min(100, pctReal);
   const over = planned > 0 && spent > planned;
   return (
     <div className="categoria-linha">
       <button className="categoria-linha-head" onClick={() => setAberto((v) => !v)}>
         {aberto ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         <span className="cat-name"><Mask value={categoria.name} active={seguro} /></span>
-        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span></span>
+        <span className={"cat-values" + (over ? " over" : "")}><Mask value={currency(spent)} active={hidden} mono /> <span className="of">/ <Mask value={currency(planned)} active={hidden} mono /></span> <span className="cat-pct">({pctReal.toFixed(0)}%)</span></span>
       </button>
       <div className="cat-bar"><div className="cat-bar-fill" style={{ width: `${pct}%`, background: over ? "var(--danger)" : "var(--gold)" }} /></div>
       {aberto && (
@@ -1404,10 +1444,19 @@ function Dashboard({ userId }) {
         const disponivel = plannedTotal - spentTotal;
         const pctExecutado = plannedTotal > 0 ? Math.min(999, (spentTotal / plannedTotal) * 100) : 0;
 
-        const totalParceladoGeral = transactions
-          .filter((t) => t.status === "categorizado" && t.parcelaAtual > 1)
-          .reduce((s, t) => s + Number(t.valor) * t.parcelaTotal, 0);
-        const qtdParceladoGeral = transactions.filter((t) => t.status === "categorizado" && t.parcelaAtual > 1).length;
+        // uma linha por COMPRA (não por parcela) — pega o valor total (valor × parcelaTotal,
+        // que é o mesmo em qualquer parcela da série) de cada compra que ainda tem parcela
+        // programada em aberto, contando só uma vez por compra
+        const seriesAbertas = new Map();
+        transactions.forEach((t) => {
+          if (t.status !== "categorizado" || t.parcelaTotal <= 1 || t.parcelaAtual <= 1) return;
+          const chave = t.origemId || t.id;
+          if (!seriesAbertas.has(chave)) seriesAbertas.set(chave, { banco: t.banco, valorTotal: Number(t.valor) * t.parcelaTotal });
+        });
+        const totalParceladoGeral = [...seriesAbertas.values()].reduce((s, v) => s + v.valorTotal, 0);
+        const qtdParceladoGeral = seriesAbertas.size;
+        const totalParceladoPorBanco = {};
+        seriesAbertas.forEach((v) => { totalParceladoPorBanco[v.banco] = (totalParceladoPorBanco[v.banco] || 0) + v.valorTotal; });
 
         // gasto por dia dentro do mês selecionado, pra evolução
         const diasNoMes = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
@@ -1474,7 +1523,13 @@ function Dashboard({ userId }) {
                   <h2>Compras parceladas</h2>
                   <span className="group-total"><Mask value={currency(totalParceladoGeral)} active={hidden} mono /></span>
                 </div>
-                <p className="modal-hint" style={{ margin: 0 }}>{qtdParceladoGeral} parcela(s) programada(s), somando o valor total de cada compra em aberto</p>
+                <p className="modal-hint" style={{ margin: "0 0 10px" }}>{qtdParceladoGeral} compra(s) em aberto, valor total de cada uma</p>
+                {Object.entries(totalParceladoPorBanco).map(([banco, valor]) => (
+                  <div key={banco} className="cat-row-top" style={{ marginBottom: 4 }}>
+                    <span className="cat-name"><Mask value={displayBanco(banco)} active={seguro} /></span>
+                    <span className="cat-values"><Mask value={currency(valor)} active={hidden} mono /></span>
+                  </div>
+                ))}
               </section>
             )}
 
@@ -1499,14 +1554,7 @@ function Dashboard({ userId }) {
 
             <section className="bank-group">
               <div className="group-head"><h2>Evolução no mês</h2></div>
-              <div className="evolucao-chart">
-                {gastoPorDia.map((d) => (
-                  <div key={d.dia} className="evolucao-bar-wrap">
-                    <div className="evolucao-bar evolucao-bar-dia" style={{ height: `${Math.max(3, (d.valor / maxGastoDia) * 100)}%` }} title={`Dia ${d.dia}: ${currency(d.valor)}`} />
-                    {(d.dia % 5 === 0 || d.dia === 1) && <span className="evolucao-label">{d.dia}</span>}
-                  </div>
-                ))}
-              </div>
+              <GraficoLinha dados={gastoPorDia} maxValor={maxGastoDia} />
             </section>
 
             <section className="bank-group">
@@ -2997,10 +3045,12 @@ function Root() {
       .secao-menu-item { text-align: left; background: none; border: none; color: var(--text); font-size: 14px; font-weight: 500; padding: 11px 14px; border-radius: 9px; cursor: pointer; }
       .secao-menu-item.active { background: var(--surface-2); color: var(--gold); font-weight: 700; }
       .secao-menu-item:not(.active):hover { background: var(--surface-2); }
-      .evolucao-chart { display: flex; align-items: flex-end; gap: 10px; height: 120px; padding-top: 10px; }
-      .evolucao-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
-      .evolucao-bar { width: 100%; max-width: 32px; background: var(--gold); border-radius: 6px 6px 2px 2px; min-height: 4px; transition: height 0.2s ease; }
-      .evolucao-label { font-size: 10px; color: var(--muted); text-transform: capitalize; }
+      .grafico-linha-wrap { position: relative; }
+      .grafico-linha-svg { width: 100%; height: 130px; overflow: visible; }
+      .grafico-linha-svg circle { cursor: pointer; }
+      .grafico-linha-labels { display: flex; justify-content: space-between; margin-top: 4px; }
+      .evolucao-label { font-size: 10px; color: var(--muted); }
+      .grafico-linha-tooltip { position: absolute; top: -6px; right: 0; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text); box-shadow: var(--shadow); }
       .banco-conectado-list { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
       .banco-conectado-item { display: flex; align-items: center; gap: 8px; background: var(--surface-2); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: var(--text); }
       .status-geral-grid { display: flex; gap: 24px; flex-wrap: wrap; }
@@ -3024,7 +3074,6 @@ function Root() {
       .categoria-transacoes { margin: 8px 0 0 19px; display: flex; flex-direction: column; gap: 4px; }
       .categoria-transacao-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 8px; font-size: 11px; color: var(--muted); padding: 3px 0; }
       .categoria-transacao-nome { color: var(--text); }
-      .evolucao-bar-dia { max-width: none; width: 100%; }
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
       .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
       .section-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
@@ -3132,6 +3181,7 @@ function Root() {
       .cat-row-top { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 6px; }
       .cat-values { font-family: 'IBM Plex Mono', monospace; display: flex; align-items: center; gap: 4px; }
       .cat-values.over { color: var(--warn); }
+      .cat-pct { color: var(--muted); font-size: 11px; }
       .limit-input { width: 60px; background: transparent; border: none; border-bottom: 1px dashed var(--line); color: var(--muted); font-family: 'IBM Plex Mono', monospace; font-size: 12px; padding: 0 2px; }
       .limit-input:focus { outline: none; border-bottom-color: var(--ok); color: var(--text); }
       .cat-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
