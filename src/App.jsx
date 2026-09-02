@@ -686,6 +686,25 @@ function Dashboard({ userId }) {
     }
   };
 
+  // Ctrl+Z desfaz, Ctrl+Y refaz — não interfere se você estiver digitando em algum campo
+  // (input, textarea), pra não atrapalhar o "desfazer digitação" normal do navegador.
+  useEffect(() => {
+    const handler = (e) => {
+      const tag = document.activeElement?.tagName;
+      const editando = tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable;
+      if (editando) return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        desfazer();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        refazer();
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [desfazer, refazer]);
+
   const [connecting, setConnecting] = useState(false);
   const [incomes, setIncomes] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -699,6 +718,10 @@ function Dashboard({ userId }) {
     ...loadLS("geralFiltros", {}),
   }));
   const [geralSort, setGeralSort] = useState(() => loadLS("geralSort", { key: "data", dir: -1 }));
+  const [lixeiraFiltros, setLixeiraFiltros] = useState(() => ({
+    estabs: [], categorias: [], bancos: [], datas: [], faturas: [],
+    ...loadLS("lixeiraFiltros", {}),
+  }));
   const hidden = privacyMode !== "normal";
   const seguro = privacyMode === "seguro";
 
@@ -707,6 +730,7 @@ function Dashboard({ userId }) {
   useEffect(() => { saveLS("privacyMode", privacyMode); }, [privacyMode]);
   useEffect(() => { saveLS("geralFiltros", geralFiltros); }, [geralFiltros]);
   useEffect(() => { saveLS("geralSort", geralSort); }, [geralSort]);
+  useEffect(() => { saveLS("lixeiraFiltros", lixeiraFiltros); }, [lixeiraFiltros]);
 
   const resetFiltros = () => {
     setGeralFiltros({ estabs: [], categorias: [], bancos: [], datas: [], faturas: [] });
@@ -1394,31 +1418,64 @@ function Dashboard({ userId }) {
         <section className="bank-group">
           <div className="group-head"><h2>Lixeira</h2></div>
           {(() => {
-            const excluidasF = excluidas.filter((t) => matchesSearch(t, categories, merchants, search, fechamentosFatura));
-            if (excluidasF.length === 0) return <p className="empty">{search.trim() ? "Nada encontrado." : "Nada na lixeira."}</p>;
+            const nomeDe = (t) => merchants.find((m) => m.id === t.merchantId)?.name || t.estabelecimento;
+            const opcoes = {
+              bancos: [...new Set(excluidas.map((t) => t.banco))].sort(),
+              estabs: [...new Set(excluidas.map(nomeDe))].sort(),
+              categorias: [...new Set(excluidas.map((t) => t.categoryId))]
+                .map((id) => categories.find((c) => c.id === id))
+                .filter(Boolean)
+                .sort((a, b) => a.name.localeCompare(b.name)),
+              datas: [...new Set(excluidas.map((t) => t.data))].sort(),
+              faturas: [...new Set(excluidas.map((t) => competencia(t, fechamentosFatura)))].sort(),
+            };
+            const excluidasF = excluidas.filter((t) => {
+              if (!matchesSearch(t, categories, merchants, search, fechamentosFatura)) return false;
+              if (lixeiraFiltros.bancos.length && !lixeiraFiltros.bancos.includes(t.banco)) return false;
+              if (lixeiraFiltros.categorias.length && !lixeiraFiltros.categorias.includes(t.categoryId)) return false;
+              if (lixeiraFiltros.datas.length && !lixeiraFiltros.datas.includes(t.data)) return false;
+              if (lixeiraFiltros.faturas.length && !lixeiraFiltros.faturas.includes(competencia(t, fechamentosFatura))) return false;
+              if (lixeiraFiltros.estabs.length && !lixeiraFiltros.estabs.includes(nomeDe(t))) return false;
+              return true;
+            });
+            const temFiltro = Object.values(lixeiraFiltros).some((v) => v.length > 0);
             return (
-              <div className="tx-list">
-                <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
-                  <span>Data</span><span>Estabelecimento</span><span>Valor Total</span><span>Valor/Mês</span><span>Excluída em</span><span /><span />
+              <>
+                <div className="filter-row" style={{ marginBottom: 14 }}>
+                  <MultiFilter label="Cartão" options={opcoes.bancos.map((b) => ({ value: b, label: displayBanco(b) }))} selected={lixeiraFiltros.bancos} onChange={(v) => setLixeiraFiltros({ ...lixeiraFiltros, bancos: v })} seguro={seguro} />
+                  <MultiFilter label="Datas" options={opcoes.datas.map((d) => ({ value: d, label: `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` }))} selected={lixeiraFiltros.datas} onChange={(v) => setLixeiraFiltros({ ...lixeiraFiltros, datas: v })} seguro={seguro} />
+                  <MultiFilter label="Estabelecimentos" options={opcoes.estabs.map((e) => ({ value: e, label: e }))} selected={lixeiraFiltros.estabs} onChange={(v) => setLixeiraFiltros({ ...lixeiraFiltros, estabs: v })} seguro={seguro} />
+                  <MultiFilter label="Categorias" options={opcoes.categorias.map((c) => ({ value: c.id, label: c.name }))} selected={lixeiraFiltros.categorias} onChange={(v) => setLixeiraFiltros({ ...lixeiraFiltros, categorias: v })} seguro={seguro} />
+                  <MultiFilter label="Faturas" options={opcoes.faturas.map((f) => ({ value: f, label: f }))} selected={lixeiraFiltros.faturas} onChange={(v) => setLixeiraFiltros({ ...lixeiraFiltros, faturas: v })} seguro={seguro} />
+                  {temFiltro && <button className="reset-btn" onClick={() => setLixeiraFiltros({ estabs: [], categorias: [], bancos: [], datas: [], faturas: [] })}>Redefinir</button>}
                 </div>
-                {[...excluidasF].sort((a, b) => (b.excluidaEm || "").localeCompare(a.excluidaEm || "")).map((t) => {
-                  const merch = merchants.find((m) => m.id === t.merchantId);
-                  const ex = t.excluidaEm ? new Date(t.excluidaEm) : null;
-                  return (
-                    <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
-                      <span className="tx-cell">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
-                      <span className="tx-cell tx-cell-estab"><Mask value={stripPixPrefix(merch?.name || t.estabelecimento)} active={seguro} /></span>
-                      <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
-                      <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor)} active={hidden} mono /></span>
-                      <span className="tx-cell" style={{ fontSize: 10 }}>
-                        {ex ? `${String(ex.getDate()).padStart(2, "0")}/${String(ex.getMonth() + 1).padStart(2, "0")}/${String(ex.getFullYear()).slice(2)} ${String(ex.getHours()).padStart(2, "0")}:${String(ex.getMinutes()).padStart(2, "0")}` : "—"}
-                      </span>
-                      <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
-                      <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
+                {excluidasF.length === 0 ? (
+                  <p className="empty">{search.trim() || temFiltro ? "Nada encontrado." : "Nada na lixeira."}</p>
+                ) : (
+                  <div className="tx-list">
+                    <div className="tx-row tx-row-head" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
+                      <span>Data</span><span>Estabelecimento</span><span>Valor Total</span><span>Valor/Mês</span><span>Excluída em</span><span /><span />
                     </div>
-                  );
-                })}
-              </div>
+                    {[...excluidasF].sort((a, b) => (b.excluidaEm || "").localeCompare(a.excluidaEm || "")).map((t) => {
+                      const merch = merchants.find((m) => m.id === t.merchantId);
+                      const ex = t.excluidaEm ? new Date(t.excluidaEm) : null;
+                      return (
+                        <div key={t.id} className="tx-row" style={{ gridTemplateColumns: "42px 1fr 0.85fr 0.85fr 90px 18px 18px" }}>
+                          <span className="tx-cell">{t.data.slice(8, 10)}/{t.data.slice(5, 7)}</span>
+                          <span className="tx-cell tx-cell-estab"><Mask value={stripPixPrefix(merch?.name || t.estabelecimento)} active={seguro} /></span>
+                          <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor * t.parcelaTotal)} active={hidden} mono /></span>
+                          <span className="tx-cell tx-cell-mono"><Mask value={currency(t.valor)} active={hidden} mono /></span>
+                          <span className="tx-cell" style={{ fontSize: 10 }}>
+                            {ex ? `${String(ex.getDate()).padStart(2, "0")}/${String(ex.getMonth() + 1).padStart(2, "0")}/${String(ex.getFullYear()).slice(2)} ${String(ex.getHours()).padStart(2, "0")}:${String(ex.getMinutes()).padStart(2, "0")}` : "—"}
+                          </span>
+                          <button className="ledger-remove" onClick={() => restoreTransaction(t.id)} aria-label="Restaurar" title="Restaurar"><RotateCcw size={14} /></button>
+                          <button className="ledger-remove" onClick={() => purgeTransaction(t.id)} aria-label="Apagar de vez" title="Apagar de vez"><X size={14} /></button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             );
           })()}
         </section>
