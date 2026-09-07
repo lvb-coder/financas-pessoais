@@ -578,6 +578,7 @@ function Dashboard({ userId }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSyncOpcoes, setShowSyncOpcoes] = useState(false);
   const [showConta, setShowConta] = useState(false);
   const [secao, setSecao] = useState(() => loadLS("secao", "inicio"));
   const [menuAberto, setMenuAberto] = useState(false);
@@ -744,7 +745,7 @@ function Dashboard({ userId }) {
 
   const [syncController, setSyncController] = useState(null);
 
-  const syncBank = async () => {
+  const syncBank = async (opcoes) => {
     setSyncing(true);
     setSyncMsg("");
     setError("");
@@ -763,6 +764,7 @@ function Dashboard({ userId }) {
           apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
           "Content-Type": "application/json",
         },
+        body: JSON.stringify(opcoes || {}),
         signal: controller.signal,
       });
       const data = await res.json();
@@ -1277,8 +1279,8 @@ function Dashboard({ userId }) {
             <X size={16} /> Cancelar
           </button>
         )}
-        <button className="icon-btn connect-btn" onClick={connectBank} disabled={connecting} aria-label="Conectar banco">
-          <Landmark size={16} /> {connecting ? "Conectando…" : <Mask value="Conectar banco" active={seguro} />}
+        <button className="icon-btn connect-btn" onClick={() => setShowSyncOpcoes(true)} aria-label="Sincronizar período específico" title="Sincronizar só um período/cartão específico">
+          <Settings size={14} /> Sincronizar período…
         </button>
         <button className="icon-btn" onClick={() => setShowSettings(true)} aria-label="Configurações de fatura" title="Fechamentos e limpeza"><Settings size={18} /></button>
         <div className="month-nav">
@@ -1784,6 +1786,9 @@ function Dashboard({ userId }) {
       )}
       {showSettings && (
         <SettingsModal fechamentosFatura={fechamentosFatura} onSaveFechamento={saveFechamento} onDeleteFechamento={deleteFechamento} merchants={merchants} patterns={patterns} categories={categories} onDeletePattern={deletePattern} onClose={() => setShowSettings(false)} />
+      )}
+      {showSyncOpcoes && (
+        <SyncOpcoesModal onClose={() => setShowSyncOpcoes(false)} onSync={(opcoes) => syncBank(opcoes)} />
       )}
     </div>
   );
@@ -3091,6 +3096,40 @@ function ContaForm() {
   );
 }
 
+function SyncOpcoesModal({ onClose, onSync }) {
+  const [banco, setBanco] = useState("ambos");
+  const [dataInicio, setDataInicio] = useState("");
+  const [dataFim, setDataFim] = useState("");
+
+  const confirmar = () => {
+    onSync({
+      banco: banco === "ambos" ? null : banco,
+      dataInicio: dataInicio || null,
+      dataFim: dataFim || null,
+    });
+    onClose();
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h3>Sincronizar período específico</h3><button onClick={onClose}><X size={18} /></button></div>
+        <p className="modal-hint">Deixa em branco pra usar o padrão (desde o início do ano). Escolher um período mais curto deixa a sincronização mais rápida.</p>
+        <label>Cartão
+          <select className="tx-input" value={banco} onChange={(e) => setBanco(e.target.value)}>
+            <option value="ambos">Nubank + Bradesco</option>
+            <option value="Nubank">Só Nubank</option>
+            <option value="Bradesco">Só Bradesco</option>
+          </select>
+        </label>
+        <label>Data início<input className="tx-input" type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} /></label>
+        <label>Data fim<input className="tx-input" type="date" value={dataFim} onChange={(e) => setDataFim(e.target.value)} /></label>
+        <button className="submit-btn" onClick={confirmar}>Sincronizar</button>
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal({ fechamentosFatura, onSaveFechamento, onDeleteFechamento, merchants, patterns, categories, onDeletePattern, onClose }) {
   const [banco, setBanco] = useState("Nubank");
   const [competencia, setCompetencia] = useState(monthKey(new Date()));
@@ -3245,7 +3284,7 @@ function Root() {
       .categoria-transacao-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 8px; font-size: 11px; color: var(--muted); padding: 3px 0; }
       .categoria-transacao-nome { color: var(--text); }
       .ledger-head { display: flex; justify-content: flex-end; align-items: center; }
-      .add-btn { display: flex; align-items: center; gap: 6px; background: var(--ok); color: #0F1613; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+      .add-btn { display: flex; align-items: center; gap: 6px; background: var(--gold); color: #FFFFFF; border: none; border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow); }
       .section-title { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 600; margin: 0 0 14px; }
       .view-tabs { display: flex; gap: 8px; margin-bottom: 18px; }
       .subview-tabs { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
@@ -3255,7 +3294,7 @@ function Root() {
       .tab-btn { background: var(--surface); border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
       .tab-btn.active { background: var(--surface-2); color: var(--text); border-color: var(--gold); font-weight: 600; }
       .checkbox { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
-      .confirm-btn { background: var(--ok); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #0F1613; }
+      .confirm-btn { background: var(--gold); border: none; border-radius: 999px; padding: 6px; display: flex; cursor: pointer; color: #FFFFFF; }
       .confirm-btn:disabled { opacity: 0.5; cursor: default; }
       .bank-group { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin-bottom: 20px; box-sizing: border-box; box-shadow: var(--shadow); }
       .bank-group-total { border-color: var(--gold); background: rgba(201,162,75,0.06); }
