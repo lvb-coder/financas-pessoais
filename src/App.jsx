@@ -740,7 +740,7 @@ function Dashboard({ userId }) {
   };
 
   useEffect(() => {
-    document.title = seguro ? "•••" : "Minhas Finanças";
+    document.title = seguro ? "•••" : "XCore";
   }, [seguro]);
 
   const [syncController, setSyncController] = useState(null);
@@ -1220,7 +1220,7 @@ function Dashboard({ userId }) {
       <header className="header">
         <div className="header-left">
           <button className="icon-btn menu-btn" onClick={() => setMenuAberto((v) => !v)} aria-label="Menu"><Menu size={20} /></button>
-          <h1><Mask value="Minhas finanças" active={seguro} /></h1>
+          <h1><Mask value="XCore" active={seguro} /></h1>
         </div>
         <div className="header-actions">
           <button className="icon-btn" onClick={desfazer} disabled={undoStack.length === 0} aria-label="Desfazer" title={undoStack.length > 0 ? `Desfazer: ${undoStack[undoStack.length - 1].label}` : "Nada pra desfazer"}>
