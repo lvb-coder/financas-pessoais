@@ -1,11 +1,11 @@
 {
-  "name": "Minhas Finanças",
-  "short_name": "Finanças",
+  "name": "XCore",
+  "short_name": "XCore",
   "description": "Consolidação e categorização automática de gastos",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0F1613",
-  "theme_color": "#0F1613",
+  "background_color": "#FFF7F8",
+  "theme_color": "#FFF7F8",
   "orientation": "portrait",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
