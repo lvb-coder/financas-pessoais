@@ -644,14 +644,18 @@ function Dashboard({ userId }) {
     setRedoStack([]);
   };
 
-  // Restaura uma foto do histórico: um upsert só em lote (bem mais rápido que um por linha)
-  // + apaga o que não existia naquele momento.
+  // Restaura uma foto do histórico: um upsert por linha (em paralelo, pra não perder muita
+  // velocidade) — em lote só dava esse erro do Postgres quando duas linhas do snapshot
+  // acabavam batendo no mesmo conflito dentro do mesmo comando.
   const restaurarSnapshot = async (snapshot) => {
     const idsAntes = new Set(snapshot.map((t) => t.id));
     const idsParaApagar = transactions.filter((t) => !idsAntes.has(t.id)).map((t) => t.id);
     if (snapshot.length > 0) {
-      const { error: upErr } = await supabase.from("transactions").upsert(snapshot.map((t) => toDbRow(t, userId)));
-      if (upErr) { setError(upErr.message); return false; }
+      const resultados = await Promise.all(
+        snapshot.map((t) => supabase.from("transactions").upsert(toDbRow(t, userId)))
+      );
+      const comErro = resultados.find((r) => r.error);
+      if (comErro) { setError(comErro.error.message); return false; }
     }
     if (idsParaApagar.length > 0) {
       const { error: delErr } = await supabase.from("transactions").delete().in("id", idsParaApagar);
